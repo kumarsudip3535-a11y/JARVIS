@@ -1,0 +1,36 @@
+{
+  "name": "jarvis-desktop",
+  "version": "1.1.0",
+  "description": "JARVIS desktop app (Electron shell around the JARVIS web app, with auto-started backend/web services and a system tray icon)",
+  "main": "main.js",
+  "author": "Sudeep Sen",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "tree-kill": "^1.2.2"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.sudeepsen.jarvis",
+    "productName": "JARVIS",
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "assets/**/*"
+    ],
+    "directories": {
+      "output": "dist"
+    }
+  }
+}

@@ -8,3 +8,60 @@ venv/
 dist/
 build/
 .next/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+token.json
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node and Next.js
+node_modules/
+.next/
+out/
+dist/
+build/
+coverage/
+
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+apps/mobile/build/
+
+# Databases and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+logs/
+
+# IDE and operating system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary/debug files
+*.tmp
+tally_debug_*
+tally_error_log.jsonl
+tally_daybook_log.jsonl
+
+# Claude-generated environment copies
+Claude outputs/
+
+# Runtime logs that may contain private data
+*.jsonl

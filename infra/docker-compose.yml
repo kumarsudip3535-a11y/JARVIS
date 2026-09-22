@@ -1,4 +1,4 @@
-﻿services:
+services:
   postgres:
     image: postgres:16
     container_name: jarvis-postgres
@@ -8,7 +8,7 @@
       POSTGRES_PASSWORD: jarvis_dev_password
       POSTGRES_DB: jarvis
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - jarvis_pg_data:/var/lib/postgresql/data
 
