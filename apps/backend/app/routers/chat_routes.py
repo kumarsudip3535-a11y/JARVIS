@@ -178,6 +178,71 @@ def _make_custom_tool_invoke(db: Session, agent_tools: list[CustomTool]):
 _MAX_CONSULT_ANSWER_CHARS = 4000
 
 
+def _build_recent_phone_call_context(db: Session, user_id: int, limit: int = 5) -> str:
+    """Build an authoritative, read-only summary of recent Twilio calls.
+
+    Phone calls are ordinary Conversation/Message rows, but normal chat
+    previously never received them as context. That made JARVIS incorrectly
+    claim it could not check calls even immediately after answering one.
+    Keep the summary deliberately small so routine chats are not flooded
+    with old transcripts.
+    """
+    calls = (
+        db.query(Conversation)
+        .filter(
+            Conversation.user_id == user_id,
+            Conversation.phone_call_sid.isnot(None),
+        )
+        .order_by(Conversation.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    if not calls:
+        return (
+            "Authoritative incoming-phone-call records: no incoming calls "
+            "have been saved for this JARVIS account yet. If Sudeep asks "
+            "whether anyone called, say no saved calls were found; never "
+            "substitute email results for phone-call records."
+        )
+
+    lines = [
+        "Authoritative incoming-phone-call records from JARVIS's database.",
+        "When Sudeep asks about calls, callers, messages, or callback requests, "
+        "answer from these records and never say you cannot check phone calls.",
+    ]
+    remaining = 6000
+    for call in calls:
+        created = call.created_at.strftime("%Y-%m-%d %H:%M") if call.created_at else "time unknown"
+        header = f"\nCALL: {call.title or 'Incoming phone call'} | received {created}"
+        if len(header) > remaining:
+            break
+        lines.append(header)
+        remaining -= len(header)
+
+        messages = (
+            db.query(Message)
+            .filter(Message.conversation_id == call.id)
+            .order_by(Message.created_at)
+            .all()
+        )
+        for message in messages:
+            speaker = "Caller" if message.role == "user" else "JARVIS"
+            content = (message.content or "").strip()
+            if not content:
+                continue
+            row = f"- {speaker}: {content}"
+            if len(row) > remaining:
+                lines.append("- (older transcript content omitted)")
+                remaining = 0
+                break
+            lines.append(row)
+            remaining -= len(row)
+        if remaining <= 0:
+            break
+
+    return "\n".join(lines)
+
+
 def run_agent_subquery(db: Session, user_id: int, question: str, target_agent: Agent) -> str:
     """Phase 17 "AI agent orchestration" (added 2026-09-20, scoped with
     Sudeep to "single-hop consult only" - see progress-tracker.md). Runs a
@@ -953,6 +1018,20 @@ def build_reply_context(
         )
 
     agent_context = _agent_context_block(agent) if agent is not None else None
+
+    # Phase 20: make actual Twilio call records visible to ordinary JARVIS
+    # chat. This is database-backed evidence, not model memory: it lets
+    # questions such as "did anyone call me?" return the saved call and
+    # transcript instead of an unrelated email summary or a false
+    # "I cannot check phone calls" answer.
+    if settings.phone_agent_enabled:
+        phone_call_context = _build_recent_phone_call_context(db, user_id)
+        agent_context = (
+            f"{agent_context}\n\n{phone_call_context}"
+            if agent_context
+            else phone_call_context
+        )
+
     allow_web_search = agent.allow_web_search if agent is not None else True
 
     # Tally daybook read: same gate as tally_context above (feature enabled +
