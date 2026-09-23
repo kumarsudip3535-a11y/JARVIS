@@ -29,16 +29,41 @@ trust level.
 """
 import datetime
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from app import phone_agent
 from app.ai_provider import get_ai_provider
 from app.config import settings
 from app.database import get_db
-from app.models import Conversation, Message, User
+from app.auth import get_current_user
+from app.models import Conversation, Message, PhoneCallRecord, User
+from app.schemas import PhoneCallRecordOut
 
 router = APIRouter(prefix="/api/phone", tags=["phone"])
+
+
+def _upsert_phone_record(
+    db: Session,
+    owner_id: int,
+    conversation_id: int,
+    call_sid: str,
+    caller_number: str,
+) -> PhoneCallRecord:
+    record = db.query(PhoneCallRecord).filter(PhoneCallRecord.call_sid == call_sid).first()
+    if record is None:
+        record = PhoneCallRecord(
+            user_id=owner_id,
+            conversation_id=conversation_id,
+            call_sid=call_sid,
+            caller_number=caller_number or "unknown number",
+            callback_requested=False,
+            is_read=False,
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+    return record
 
 
 def _twiml_response(xml: str) -> Response:
@@ -123,6 +148,8 @@ async def incoming_call(request: Request, db: Session = Depends(get_db)) -> Resp
         db.add(convo)
         db.commit()
         db.refresh(convo)
+
+    _upsert_phone_record(db, owner.id, convo.id, call_sid, caller)
 
     greeting = phone_agent.build_greeting_text(settings.phone_agent_business_name, settings.phone_agent_greeting)
     db.add(Message(conversation_id=convo.id, role="assistant", content=greeting))
@@ -216,7 +243,25 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)) -> Resp
                 "I'm having some trouble right now - please try calling back in "
                 f"a moment. {phone_agent.END_CALL_MARKER}"
             )
-        reply_text, end_call = phone_agent.extract_end_call_marker(raw_reply)
+        reply_text, callback_request = phone_agent.extract_callback_request_marker(raw_reply)
+        if callback_request is not None:
+            record = _upsert_phone_record(
+                db,
+                convo.user_id,
+                convo.id,
+                call_sid,
+                form.get("From", "unknown number"),
+            )
+            record.caller_name = callback_request["caller_name"]
+            record.reason = callback_request["reason"]
+            record.preferred_callback_time = callback_request["preferred_time"]
+            record.callback_requested = True
+            # A completed callback request is always unread, even if the
+            # owner happened to mark the initial call notification read
+            # while the call was still in progress.
+            record.is_read = False
+            db.commit()
+        reply_text, end_call = phone_agent.extract_end_call_marker(reply_text)
         reply_text = phone_agent.truncate_for_speech(reply_text)
 
     db.add(Message(conversation_id=convo.id, role="assistant", content=reply_text))
@@ -232,3 +277,37 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)) -> Resp
             reply_text, gather_action_url, settings.phone_agent_language, settings.phone_agent_voice
         )
     return _twiml_response(twiml)
+
+@router.get("/records", response_model=list[PhoneCallRecordOut])
+def list_phone_records(
+    unread_only: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = db.query(PhoneCallRecord).filter(PhoneCallRecord.user_id == current_user.id)
+    if unread_only:
+        query = query.filter(PhoneCallRecord.is_read.is_(False))
+    return query.order_by(PhoneCallRecord.created_at.desc()).limit(25).all()
+
+
+@router.post("/records/{record_id}/read", response_model=PhoneCallRecordOut)
+def mark_phone_record_read(
+    record_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    record = (
+        db.query(PhoneCallRecord)
+        .filter(
+            PhoneCallRecord.id == record_id,
+            PhoneCallRecord.user_id == current_user.id,
+        )
+        .first()
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Phone call record not found")
+    record.is_read = True
+    db.commit()
+    db.refresh(record)
+    return record
+

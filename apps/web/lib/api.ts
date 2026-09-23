@@ -490,3 +490,32 @@ export function createCalendarEvent(draft: CalendarEventDraft): Promise<Calendar
     body: JSON.stringify(draft),
   });
 }
+
+// Phase 20 incoming phone notifications.
+export type PhoneCallRecord = {
+  id: number;
+  conversation_id: number;
+  caller_number: string;
+  caller_name: string | null;
+  reason: string | null;
+  preferred_callback_time: string | null;
+  callback_requested: boolean;
+  is_read: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export function listUnreadPhoneCalls(): Promise<PhoneCallRecord[]> {
+  return request("/api/phone/records?unread_only=true", {
+    method: "GET",
+    headers: { Authorization: `Bearer ${getToken()}` },
+  });
+}
+
+export function markPhoneCallRead(id: number): Promise<PhoneCallRecord> {
+  return request(`/api/phone/records/${id}/read`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${getToken()}` },
+  });
+}
+
