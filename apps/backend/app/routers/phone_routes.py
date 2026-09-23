@@ -28,6 +28,7 @@ absolute minimum context rather than reusing a helper built for a different
 trust level.
 """
 import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.orm import Session
@@ -113,7 +114,11 @@ async def incoming_call(request: Request, db: Session = Depends(get_db)) -> Resp
 
     convo = db.query(Conversation).filter(Conversation.phone_call_sid == call_sid).first()
     if not convo:
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        try:
+            business_tz = ZoneInfo(settings.phone_agent_timezone)
+        except Exception:
+            business_tz = datetime.timezone.utc
+        timestamp = datetime.datetime.now(business_tz).strftime("%Y-%m-%d %I:%M %p %Z")
         convo = Conversation(
             user_id=owner.id,
             title=f"\U0001F4DE Phone Call: {caller} ({timestamp})",
