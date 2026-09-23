@@ -40,6 +40,7 @@ import base64
 import datetime
 import hashlib
 import hmac
+import json
 from xml.sax.saxutils import escape as _xml_escape
 from zoneinfo import ZoneInfo
 
@@ -51,6 +52,7 @@ _END_CALL_MARKER = "[END_CALL]"
 # across modules is the kind of thing that quietly breaks later, so it gets
 # a real public name instead.
 END_CALL_MARKER = _END_CALL_MARKER
+_CALLBACK_REQUEST_MARKER = "[CALLBACK_REQUEST]"
 
 
 def phone_timezone(timezone_name: str) -> datetime.tzinfo:
@@ -148,6 +150,13 @@ def build_phone_persona_context(business_name: str, extra_persona: str) -> str:
         "3. If asked, always say plainly that you're an AI assistant - never "
         "claim to be a human. Be warm and genuinely helpful; for many callers "
         "this is their first impression of the business.",
+        "4. If the caller asks for a callback, collect their name, the reason "
+        "for calling, and their preferred callback time. Ask only for whichever "
+        "details are still missing. Once all three are known, confirm them aloud "
+        "and append this machine-readable marker to the end of the reply: "
+        '[CALLBACK_REQUEST]{"caller_name":"...","reason":"...","preferred_time":"..."}. '
+        "Use valid JSON with those exact keys. The marker is removed before speech, "
+        "so the caller will not hear it. Do not emit it until all three values are known.",
         f'When the conversation has naturally wrapped up (the caller said '
         f"goodbye, or there's nothing more you can help with), end your reply "
         f"with the exact text {_END_CALL_MARKER} by itself - this is a real "
@@ -157,6 +166,42 @@ def build_phone_persona_context(business_name: str, extra_persona: str) -> str:
     if extra_persona:
         lines.append("Additional instructions Sudeep has set for phone calls specifically:\n" + extra_persona)
     return "\n\n".join(lines)
+
+
+def extract_callback_request_marker(reply_text: str) -> "tuple[str, dict | None]":
+    """Remove and parse a structured callback marker from a phone reply.
+
+    Returns the original text with the marker removed plus a normalized
+    callback dict. Malformed or incomplete JSON is ignored safely: callers
+    still hear the conversational reply, and no partial/guessed callback is
+    stored.
+    """
+    text = (reply_text or "").strip()
+    idx = text.find(_CALLBACK_REQUEST_MARKER)
+    if idx == -1:
+        return text, None
+
+    json_start = idx + len(_CALLBACK_REQUEST_MARKER)
+    while json_start < len(text) and text[json_start].isspace():
+        json_start += 1
+    decoder = json.JSONDecoder()
+    try:
+        data, consumed = decoder.raw_decode(text[json_start:])
+    except (json.JSONDecodeError, TypeError):
+        return text.replace(_CALLBACK_REQUEST_MARKER, "").strip(), None
+
+    if not isinstance(data, dict):
+        return text[:idx].strip() + text[json_start + consumed:].strip(), None
+
+    normalized = {
+        "caller_name": str(data.get("caller_name") or "").strip(),
+        "reason": str(data.get("reason") or "").strip(),
+        "preferred_time": str(data.get("preferred_time") or "").strip(),
+    }
+    cleaned = (text[:idx] + text[json_start + consumed:]).strip()
+    if not all(normalized.values()):
+        return cleaned, None
+    return cleaned, normalized
 
 
 def extract_end_call_marker(reply_text: str) -> "tuple[str, bool]":
