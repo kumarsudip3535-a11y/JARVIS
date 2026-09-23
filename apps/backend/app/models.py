@@ -272,6 +272,35 @@ class Automation(Base):
     user = relationship("User")
 
 
+
+class PhoneCallRecord(Base):
+    """One durable notification/summary row for each incoming Twilio call.
+
+    The row is created as soon as the call arrives, so even a caller who
+    hangs up before leaving a message still appears in JARVIS. If the caller
+    requests a callback, later Gather turns update the same row with the
+    structured details. call_sid and conversation_id are unique so Twilio
+    webhook retries can never create duplicate notifications.
+    """
+    __tablename__ = "phone_call_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False, unique=True)
+    call_sid = Column(String, nullable=False, unique=True, index=True)
+    caller_number = Column(String, nullable=False)
+    caller_name = Column(String, nullable=True)
+    reason = Column(Text, nullable=True)
+    preferred_callback_time = Column(String, nullable=True)
+    callback_requested = Column(Boolean, nullable=False, default=False)
+    is_read = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User")
+    conversation = relationship("Conversation")
+
+
 class TallyInvoiceLog(Base):
     """Custom Tally billing feature (not one of the charter's 29 numbered
     phases - added at Sudeep's request, see progress-tracker.md): an audit
