@@ -13,6 +13,9 @@ import {
   createCalendarEvent,
   getAgent,
   executeCode,
+  listUnreadPhoneCalls,
+  markPhoneCallRead,
+  type PhoneCallRecord,
   type TallyBillDraft,
   type CalendarEventDraft,
   type CodeExecuteResult,
@@ -159,6 +162,9 @@ export default function ChatPage() {
   // a single reply can contain more than one fenced code block, each run
   // independently rather than sharing one status like tallyStatus above.
   const [codeRuns, setCodeRuns] = useState<Record<string, CodeRunState>>({});
+  // Phase 20: unread incoming calls/callback requests, refreshed while
+  // JARVIS is open so a completed phone call appears without asking in chat.
+  const [phoneRecords, setPhoneRecords] = useState<PhoneCallRecord[]>([]);
 
   // Agent Factory v1 (custom feature, see progress-tracker.md): chatting via
   // /chat?agent=<id> starts (or continues) a conversation with a named
@@ -234,6 +240,28 @@ export default function ChatPage() {
         router.replace("/login");
       });
   }, [router]);
+
+  useEffect(() => {
+    if (checking || !getToken()) return;
+    let active = true;
+
+    const refreshPhoneRecords = () => {
+      listUnreadPhoneCalls()
+        .then((records) => {
+          if (active) setPhoneRecords(records);
+        })
+        .catch(() => {
+          // Phone notifications are helpful but must never block chat.
+        });
+    };
+
+    refreshPhoneRecords();
+    const timer = window.setInterval(refreshPhoneRecords, 15000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [checking]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -653,6 +681,15 @@ export default function ChatPage() {
     }
   }
 
+  async function dismissPhoneRecord(id: number) {
+    try {
+      await markPhoneCallRead(id);
+      setPhoneRecords((records) => records.filter((record) => record.id !== id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't mark that call as read.");
+    }
+  }
+
   function handleLogout() {
     voiceModeRef.current = false;
     clearToken();
@@ -758,6 +795,49 @@ export default function ChatPage() {
           </button>
         </div>
       </header>
+
+      {phoneRecords.length > 0 && (
+        <section className="mb-4 space-y-2" aria-label="Unread incoming calls">
+          {phoneRecords.map((record) => (
+            <div
+              key={record.id}
+              className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="font-semibold">
+                    {record.callback_requested ? "📞 New callback request" : "📞 New incoming call"}
+                  </p>
+                  <p className="mt-1">
+                    {record.caller_name ? `${record.caller_name} · ` : ""}
+                    {record.caller_number}
+                  </p>
+                  <p className="text-xs text-amber-800">
+                    {new Date(record.created_at).toLocaleString("en-IN")}
+                  </p>
+                  {record.reason && (
+                    <p className="mt-2">
+                      <span className="font-medium">Reason:</span> {record.reason}
+                    </p>
+                  )}
+                  {record.preferred_callback_time && (
+                    <p>
+                      <span className="font-medium">Preferred time:</span>{" "}
+                      {record.preferred_callback_time}
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={() => dismissPhoneRecord(record.id)}
+                  className="shrink-0 rounded-lg border border-amber-400 bg-white px-3 py-1.5 text-xs font-medium hover:bg-amber-100"
+                >
+                  Mark read
+                </button>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
 
       {showAddUser && (
         <form
