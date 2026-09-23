@@ -2,9 +2,10 @@
 import datetime
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.models import Conversation, Message
+from app import phone_agent
 from app.routers.chat_routes import _build_recent_phone_call_context
 
 
@@ -49,6 +50,15 @@ class PhoneCallContextTests(unittest.TestCase):
         self.assertIn("Caller: Please call me tomorrow.", result)
         self.assertIn("never say you cannot check phone calls", result)
         self.assertIn("Call duration is NOT recorded", result)
+
+
+    def test_windows_without_tzdata_still_uses_ist(self):
+        with patch("app.phone_agent.ZoneInfo", side_effect=Exception("no tzdata")):
+            tz = phone_agent.phone_timezone("Asia/Kolkata")
+        converted = datetime.datetime(
+            2026, 9, 23, 15, 0, tzinfo=datetime.timezone.utc
+        ).astimezone(tz)
+        self.assertEqual(converted.strftime("%Y-%m-%d %I:%M %p %Z"), "2026-09-23 08:30 PM IST")
 
 
 if __name__ == "__main__":
