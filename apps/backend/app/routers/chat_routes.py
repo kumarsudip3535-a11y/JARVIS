@@ -19,6 +19,7 @@ from app import health_check
 from app import custom_tools as custom_tools_module
 from app import automation_engine
 from app import google_client
+from app import phone_agent
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -215,7 +216,6 @@ def _build_recent_phone_call_context(db: Session, user_id: int, limit: int = 5) 
     remaining = 6000
     for call in calls:
         if call.created_at:
-            from zoneinfo import ZoneInfo
             created_at = call.created_at
             # PostgreSQL returns timezone-aware values, while older SQLite
             # databases may return naive UTC values. Treat naive values as
@@ -223,14 +223,9 @@ def _build_recent_phone_call_context(db: Session, user_id: int, limit: int = 5) 
             # two different times.
             if created_at.tzinfo is None:
                 created_at = created_at.replace(tzinfo=datetime.timezone.utc)
-            try:
-                local_time = created_at.astimezone(
-                    ZoneInfo(settings.phone_agent_timezone)
-                ).strftime("%Y-%m-%d %I:%M %p %Z")
-            except Exception:
-                local_time = created_at.astimezone(
-                    datetime.timezone.utc
-                ).strftime("%Y-%m-%d %I:%M %p UTC")
+            local_time = created_at.astimezone(
+                phone_agent.phone_timezone(settings.phone_agent_timezone)
+            ).strftime("%Y-%m-%d %I:%M %p %Z")
         else:
             local_time = "time unknown"
         header = f"\nCALL: {call.title or 'Incoming phone call'} | authoritative received time: {local_time}"
