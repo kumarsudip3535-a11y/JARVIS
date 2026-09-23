@@ -32,7 +32,7 @@ class PhoneCallContextTests(unittest.TestCase):
         call = SimpleNamespace(
             id=12,
             title="📞 Phone Call: +919999999999 (2026-09-23 20:30)",
-            created_at=datetime.datetime(2026, 9, 23, 20, 30),
+            created_at=datetime.datetime(2026, 9, 23, 15, 0, tzinfo=datetime.timezone.utc),
         )
         messages = [
             SimpleNamespace(role="assistant", content="How can I help?", created_at=None),
@@ -44,10 +44,11 @@ class PhoneCallContextTests(unittest.TestCase):
         result = _build_recent_phone_call_context(db, user_id=7)
 
         self.assertIn("+919999999999", result)
-        self.assertIn("received 2026-09-23 20:30", result)
+        self.assertIn("authoritative received time: 2026-09-23 08:30 PM IST", result)
         self.assertIn("JARVIS: How can I help?", result)
         self.assertIn("Caller: Please call me tomorrow.", result)
         self.assertIn("never say you cannot check phone calls", result)
+        self.assertIn("Call duration is NOT recorded", result)
 
 
 if __name__ == "__main__":

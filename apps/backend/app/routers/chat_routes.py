@@ -209,11 +209,31 @@ def _build_recent_phone_call_context(db: Session, user_id: int, limit: int = 5) 
         "Authoritative incoming-phone-call records from JARVIS's database.",
         "When Sudeep asks about calls, callers, messages, or callback requests, "
         "answer from these records and never say you cannot check phone calls.",
+        f"All displayed received times are converted to {settings.phone_agent_timezone}. "
+        "Call duration is NOT recorded: never infer, estimate, or report a duration.",
     ]
     remaining = 6000
     for call in calls:
-        created = call.created_at.strftime("%Y-%m-%d %H:%M") if call.created_at else "time unknown"
-        header = f"\nCALL: {call.title or 'Incoming phone call'} | received {created}"
+        if call.created_at:
+            from zoneinfo import ZoneInfo
+            created_at = call.created_at
+            # PostgreSQL returns timezone-aware values, while older SQLite
+            # databases may return naive UTC values. Treat naive values as
+            # UTC before converting so the same call never appears twice at
+            # two different times.
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+            try:
+                local_time = created_at.astimezone(
+                    ZoneInfo(settings.phone_agent_timezone)
+                ).strftime("%Y-%m-%d %I:%M %p %Z")
+            except Exception:
+                local_time = created_at.astimezone(
+                    datetime.timezone.utc
+                ).strftime("%Y-%m-%d %I:%M %p UTC")
+        else:
+            local_time = "time unknown"
+        header = f"\nCALL: {call.title or 'Incoming phone call'} | authoritative received time: {local_time}"
         if len(header) > remaining:
             break
         lines.append(header)
