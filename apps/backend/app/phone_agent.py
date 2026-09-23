@@ -37,9 +37,11 @@ Design notes worth knowing before touching this:
   draft) since there's nothing to review before a call just... ends.
 """
 import base64
+import datetime
 import hashlib
 import hmac
 from xml.sax.saxutils import escape as _xml_escape
+from zoneinfo import ZoneInfo
 
 from app.config import settings
 
@@ -49,6 +51,23 @@ _END_CALL_MARKER = "[END_CALL]"
 # across modules is the kind of thing that quietly breaks later, so it gets
 # a real public name instead.
 END_CALL_MARKER = _END_CALL_MARKER
+
+
+def phone_timezone(timezone_name: str) -> datetime.tzinfo:
+    """Resolve the configured phone timezone on every supported OS.
+
+    Windows Python installations often do not include the IANA timezone
+    database that ZoneInfo uses. India has no daylight-saving transitions,
+    so Asia/Kolkata has a safe fixed-offset fallback. Other missing/invalid
+    timezone names fall back to UTC rather than showing an unlabelled or
+    incorrect local time.
+    """
+    try:
+        return ZoneInfo(timezone_name)
+    except Exception:
+        if timezone_name == "Asia/Kolkata":
+            return datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
+        return datetime.timezone.utc
 
 
 def phone_agent_configured() -> bool:
