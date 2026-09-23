@@ -310,6 +310,9 @@ class Settings(BaseSettings):
     # action URL and the signature-validation URL are built from this
     # setting instead of trusted from the request itself.
     phone_agent_public_base_url: str = os.getenv("PHONE_AGENT_PUBLIC_BASE_URL", "")
+    # Store database timestamps in UTC, but present call times in the
+    # business's own timezone. Defaults to India for SS Retail Services.
+    phone_agent_timezone: str = os.getenv("PHONE_AGENT_TIMEZONE", "Asia/Kolkata")
     phone_agent_validate_signature: bool = os.getenv("PHONE_AGENT_VALIDATE_SIGNATURE", "true").lower() == "true"
     phone_agent_business_name: str = os.getenv("PHONE_AGENT_BUSINESS_NAME", "SS Retail Services")
     phone_agent_greeting: str = os.getenv("PHONE_AGENT_GREETING", "")
