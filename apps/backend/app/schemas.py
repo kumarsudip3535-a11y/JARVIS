@@ -293,3 +293,19 @@ class CalendarEventResult(BaseModel):
     message: str
     event_id: str | None = None
     html_link: str | None = None
+
+class PhoneCallRecordOut(BaseModel):
+    id: int
+    conversation_id: int
+    caller_number: str
+    caller_name: str | None = None
+    reason: str | None = None
+    preferred_callback_time: str | None = None
+    callback_requested: bool
+    is_read: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
