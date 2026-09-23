@@ -188,7 +188,8 @@ def extract_callback_request_marker(reply_text: str) -> "tuple[str, dict | None]
     try:
         data, consumed = decoder.raw_decode(text[json_start:])
     except (json.JSONDecodeError, TypeError):
-        return text.replace(_CALLBACK_REQUEST_MARKER, "").strip(), None
+        # Never speak a broken machine marker or its JSON-like payload.
+        return text[:idx].strip(), None
 
     if not isinstance(data, dict):
         return text[:idx].strip() + text[json_start + consumed:].strip(), None
