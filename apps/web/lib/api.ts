@@ -491,6 +491,28 @@ export function createCalendarEvent(draft: CalendarEventDraft): Promise<Calendar
   });
 }
 
+export type OutboundCallDraft = {
+  to_number: string;
+  purpose: string;
+  opening_message: string;
+};
+
+export type OutboundCallResult = {
+  success: boolean;
+  call_sid: string;
+  status: string;
+  message: string;
+  conversation_id: number | null;
+};
+
+export function placeOutboundCall(draft: OutboundCallDraft): Promise<OutboundCallResult> {
+  return request("/api/phone/outbound-call", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${getToken()}` },
+    body: JSON.stringify(draft),
+  });
+}
+
 // Phase 20 incoming phone notifications.
 export type PhoneCallRecord = {
   id: number;
