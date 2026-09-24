@@ -687,7 +687,7 @@ export default function ChatPage() {
   async function handlePlaceOutboundCall(index: number) {
     const target = messages[index];
     if (!target?.outboundCallDraft || target.outboundCallStatus !== "idle") return;
-    if (!/^\\+[1-9]\\d{7,14}$/.test(target.outboundCallDraft.to_number.trim())) {
+    if (!/^\+[1-9]\d{7,14}$/.test(target.outboundCallDraft.to_number.trim())) {
       setMessages((prev) =>
         prev.map((message, i) =>
           i === index
