@@ -27,6 +27,7 @@ automation Sudeep authored himself, so this router hand-assembles the
 absolute minimum context rather than reusing a helper built for a different
 trust level.
 """
+import asyncio
 import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -41,6 +42,20 @@ from app.models import Conversation, Message, PhoneCallRecord, User
 from app.schemas import PhoneCallRecordOut
 
 router = APIRouter(prefix="/api/phone", tags=["phone"])
+
+
+async def _generate_phone_reply(provider, messages: list[dict], persona: str) -> str:
+    """Run blocking AI generation off the event loop with a Twilio-safe cap."""
+    timeout = min(max(settings.phone_agent_reply_timeout_seconds, 1.0), 12.0)
+    return await asyncio.wait_for(
+        asyncio.to_thread(
+            provider.generate_reply,
+            messages,
+            agent_context=persona,
+            allow_web_search=settings.phone_agent_allow_web_search,
+        ),
+        timeout=timeout,
+    )
 
 
 def _upsert_phone_record(
@@ -229,10 +244,14 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)) -> Resp
         )
         provider = get_ai_provider()
         try:
-            raw_reply = provider.generate_reply(
-                messages,
-                agent_context=persona,
-                allow_web_search=settings.phone_agent_allow_web_search,
+            raw_reply = await _generate_phone_reply(provider, messages, persona)
+        except asyncio.TimeoutError:
+            # Twilio stops waiting for slow webhook responses. Return valid
+            # TwiML promptly so the caller hears a graceful explanation
+            # instead of Twilio's generic "application error" recording.
+            raw_reply = (
+                "I'm sorry, my response is taking too long right now. Please "
+                f"call back in a moment. {phone_agent.END_CALL_MARKER}"
             )
         except Exception:
             # Never let a raw exception reach a live phone call - same
