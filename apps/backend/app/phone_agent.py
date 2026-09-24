@@ -241,6 +241,37 @@ def _say_block(text: str, voice: str, language: str) -> str:
     return f'<Say voice="{_xml_escape(voice)}" language="{_xml_escape(language)}">{_xml_escape(text)}</Say>'
 
 
+def build_outbound_phone_persona_context(business_name: str, purpose: str, extra_persona: str) -> str:
+    """Prompt overlay for a JARVIS-initiated call, distinct from the
+    incoming-call assistant. The approved purpose is included so the callee
+    hears a relevant continuation rather than the generic incoming-call
+    question, and the assistant does not agree to changed terms."""
+    business = business_name or "SS Retail Services"
+    lines = [
+        f"You are Saanvi, an AI assistant calling on behalf of Sudip at {business}. "
+        "This is an outbound call to a person or business. The opening message "
+        "has already been spoken; continue the conversation naturally and do not "
+        "repeat it or ask the generic question 'How can I help you?'.",
+        f"The purpose approved for this call is: {purpose or 'the request stated in the opening message'}.",
+        "Speak naturally in 1 to 3 short sentences at a time. Clearly identify "
+        "yourself as an AI assistant if needed. Ask focused questions to pursue "
+        "the stated request and listen carefully to the other person.",
+        "For a booking or appointment, ask whether the exact requested date, "
+        "time, service, and party size are available. Never say a booking is "
+        "confirmed unless the business clearly confirms those exact requested "
+        "details. Do not accept a different date or time, an unexpected price, "
+        "deposit, cancellation condition, or other new term. If anything differs "
+        "from the approved request, say you need to check with Sudip and end the "
+        "call politely without agreeing.",
+        "Do not claim you have access to calendars, email, payment, or other "
+        "business systems during this call. Do not invent names, details, or "
+        "confirmation. End politely when the purpose is complete.",
+    ]
+    if extra_persona:
+        lines.append("Additional phone instructions:\n" + extra_persona)
+    return "\n\n".join(lines)
+
+
 def build_gather_twiml(
     prompt_text: str,
     gather_action_url: str,

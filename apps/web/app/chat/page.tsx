@@ -15,6 +15,8 @@ import {
   executeCode,
   listUnreadPhoneCalls,
   markPhoneCallRead,
+  placeOutboundCall,
+  type OutboundCallDraft,
   type PhoneCallRecord,
   type TallyBillDraft,
   type CalendarEventDraft,
@@ -34,6 +36,8 @@ type TallyCardStatus = "idle" | "sending" | "success" | "error";
 // until he presses the button.
 type CalendarCardStatus = "idle" | "sending" | "success" | "error";
 
+type OutboundCallCardStatus = "idle" | "sending" | "success" | "error";
+
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
@@ -43,6 +47,9 @@ type ChatMessage = {
   calendarDraft?: CalendarEventDraft;
   calendarStatus?: CalendarCardStatus;
   calendarResultMessage?: string;
+  outboundCallDraft?: OutboundCallDraft;
+  outboundCallStatus?: OutboundCallCardStatus;
+  outboundCallResultMessage?: string;
 };
 
 function tallyDraftTotal(draft: TallyBillDraft): number {
@@ -504,6 +511,8 @@ export default function ChatPage() {
           tallyStatus: result.tally_draft ? "idle" : undefined,
           calendarDraft: result.calendar_draft || undefined,
           calendarStatus: result.calendar_draft ? "idle" : undefined,
+          outboundCallDraft: result.outbound_call_draft || undefined,
+          outboundCallStatus: result.outbound_call_draft ? "idle" : undefined,
         },
       ]);
       updateVoiceStatus("speaking");
@@ -560,6 +569,8 @@ export default function ChatPage() {
           tallyStatus: result.tally_draft ? "idle" : undefined,
           calendarDraft: result.calendar_draft || undefined,
           calendarStatus: result.calendar_draft ? "idle" : undefined,
+          outboundCallDraft: result.outbound_call_draft || undefined,
+          outboundCallStatus: result.outbound_call_draft ? "idle" : undefined,
         },
       ]);
     } catch (err) {
@@ -638,6 +649,34 @@ export default function ChatPage() {
               }
             : m
         )
+      );
+    }
+  }
+
+  // Phase 22: this is the explicit approval action for a real outbound
+  // Twilio call. Drafting a card in chat never calls anyone by itself.
+  async function handlePlaceOutboundCall(index: number) {
+    const target = messages[index];
+    if (!target?.outboundCallDraft) return;
+    setMessages((prev) =>
+      prev.map((m, i) => i === index ? { ...m, outboundCallStatus: "sending" as OutboundCallCardStatus } : m)
+    );
+    try {
+      const result = await placeOutboundCall(target.outboundCallDraft);
+      setMessages((prev) =>
+        prev.map((m, i) => i === index ? {
+          ...m,
+          outboundCallStatus: "success" as OutboundCallCardStatus,
+          outboundCallResultMessage: result.message,
+        } : m)
+      );
+    } catch (err) {
+      setMessages((prev) =>
+        prev.map((m, i) => i === index ? {
+          ...m,
+          outboundCallStatus: "error" as OutboundCallCardStatus,
+          outboundCallResultMessage: err instanceof Error ? err.message : "Couldn't start the call.",
+        } : m)
       );
     }
   }
@@ -1011,6 +1050,31 @@ export default function ChatPage() {
                           : m.tallyStatus === "error"
                             ? "Retry"
                             : "Send to Tally"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+              {m.role === "assistant" && m.outboundCallDraft && (
+                <div className="mt-3 border rounded-xl bg-white text-gray-900 p-3 text-sm space-y-2">
+                  <p className="font-semibold">📞 Outbound call ready for your review</p>
+                  <p><span className="font-medium">To:</span> {m.outboundCallDraft.to_number}</p>
+                  <p><span className="font-medium">Purpose:</span> {m.outboundCallDraft.purpose}</p>
+                  <p className="text-xs text-gray-600">{m.outboundCallDraft.opening_message}</p>
+                  <p className="text-xs text-amber-700">Pressing Place Call starts a real phone call. Check the number and request first.</p>
+                  {m.outboundCallStatus === "success" ? (
+                    <p className="text-xs text-green-600">✅ {m.outboundCallResultMessage}</p>
+                  ) : (
+                    <>
+                      {m.outboundCallStatus === "error" && (
+                        <p className="text-xs text-red-600">⚠️ {m.outboundCallResultMessage}</p>
+                      )}
+                      <button
+                        onClick={() => handlePlaceOutboundCall(i)}
+                        disabled={m.outboundCallStatus === "sending" || m.outboundCallStatus === "error"}
+                        className="bg-black text-white rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+                      >
+                        {m.outboundCallStatus === "sending" ? "Starting call..." : "Place Call"}
                       </button>
                     </>
                   )}

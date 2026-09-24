@@ -1,5 +1,6 @@
 import datetime
 import json
+import os
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -9,7 +10,7 @@ from app.config import settings
 from app.database import SessionLocal, get_db
 from app.models import User, Conversation, Message, Memory, Skill, Agent, CustomTool, Automation, GoogleAccount
 from app.schemas import (
-    ChatMessageIn, ChatMessageOut, ConversationOut, TallyBillDraft, TallyTaxLine, CalendarEventDraft,
+    ChatMessageIn, ChatMessageOut, ConversationOut, TallyBillDraft, TallyTaxLine, CalendarEventDraft, OutboundCallDraft,
 )
 from app.auth import get_current_user
 from app.ai_provider import get_ai_provider
@@ -24,6 +25,7 @@ from app import phone_agent
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 _TALLY_DRAFT_MARKER = "[TALLY_BILL_DRAFT]"
+_OUTBOUND_CALL_DRAFT_MARKER = "[OUTBOUND_CALL_DRAFT]"
 
 
 def _make_tally_daybook_query(company: str, host: str, port: int, timeout: int):
@@ -734,6 +736,28 @@ def _make_find_open_slots_query(db: Session, user_id: int):
 _CALENDAR_DRAFT_MARKER = "[CALENDAR_EVENT_DRAFT]"
 
 
+def _extract_outbound_call_draft(reply_text: str) -> tuple[str, dict | None]:
+    """Extract a structured outbound-call request for the chat approval card.
+    The number, purpose, and opening message remain reviewable by the user;
+    parsing a marker never places a call."""
+    idx = reply_text.find(_OUTBOUND_CALL_DRAFT_MARKER)
+    if idx == -1:
+        return reply_text, None
+
+    start = idx + len(_OUTBOUND_CALL_DRAFT_MARKER)
+    while start < len(reply_text) and reply_text[start].isspace():
+        start += 1
+    try:
+        data, consumed = json.JSONDecoder().raw_decode(reply_text[start:])
+    except (json.JSONDecodeError, TypeError):
+        return reply_text, None
+    if not isinstance(data, dict):
+        return reply_text, None
+
+    cleaned = (reply_text[:idx] + reply_text[start + consumed:]).strip()
+    return cleaned, data
+
+
 def _extract_calendar_draft(reply_text: str) -> tuple[str, dict | None]:
     """Modeled directly on _extract_tally_draft below - looks for a
     [CALENDAR_EVENT_DRAFT]{...json...} block, pulls the JSON out by matching
@@ -1342,6 +1366,23 @@ def send_message(
             # let it break the chat reply itself.
             calendar_draft = None
 
+    # Phase 22 outbound calls only become actionable through an explicit
+    # review card. Hide malformed or unavailable call drafts rather than
+    # returning an unusable button.
+    reply_text, outbound_call_data = _extract_outbound_call_draft(reply_text)
+    outbound_call_draft = None
+    outbound_ready = (
+        settings.phone_agent_enabled
+        and phone_agent.phone_agent_configured()
+        and os.getenv("PHONE_AGENT_OUTBOUND_ENABLED", "true").lower() == "true"
+        and bool(os.getenv("TWILIO_FROM_NUMBER", "").strip())
+    )
+    if outbound_call_data is not None and outbound_ready:
+        try:
+            outbound_call_draft = OutboundCallDraft(**outbound_call_data)
+        except Exception:
+            outbound_call_draft = None
+
     assistant_message = Message(conversation_id=conversation.id, role="assistant", content=reply_text)
     db.add(assistant_message)
     db.commit()
@@ -1354,6 +1395,7 @@ def send_message(
         "reply": reply_text,
         "tally_draft": tally_draft,
         "calendar_draft": calendar_draft,
+        "outbound_call_draft": outbound_call_draft,
         "agent_id": agent.id if agent is not None else None,
         "agent_name": agent.name if agent is not None else None,
     }
