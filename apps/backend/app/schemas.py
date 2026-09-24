@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -61,6 +61,14 @@ class TallyBillDraft(BaseModel):
     other_reference_no: str | None = None
     destination: str | None = None
 
+class OutboundCallDraft(BaseModel):
+    """A proposed Twilio call shown for review; creating the draft never
+    places a call. The user must press the frontend's explicit call button."""
+    to_number: str = Field(..., min_length=6, max_length=32)
+    purpose: str = Field(..., min_length=3, max_length=500)
+    opening_message: str = Field(..., min_length=10, max_length=700)
+
+
 class CalendarEventDraft(BaseModel):
     """Phase 19 "Email + Calendar": mirrors TallyBillDraft's role exactly -
     set only when JARVIS's reply included a [CALENDAR_EVENT_DRAFT] block (see
@@ -88,6 +96,9 @@ class ChatMessageOut(BaseModel):
     # Phase 19 "Email + Calendar": same pattern as tally_draft above, for a
     # [CALENDAR_EVENT_DRAFT] block.
     calendar_draft: CalendarEventDraft | None = None
+    # Phase 22: this is only an editable/reviewable proposal. The separate
+    # authenticated outbound-call endpoint is invoked only by a user button.
+    outbound_call_draft: OutboundCallDraft | None = None
     # Agent Factory v1: set whenever this conversation is tied to a named
     # agent (whether from agent_id on this call or from an earlier message
     # in the same conversation), so the frontend can show/keep showing which
