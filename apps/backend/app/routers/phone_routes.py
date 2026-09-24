@@ -238,7 +238,16 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)) -> Resp
         reply_text = "I need to let you go now - please call back if you need anything else. Goodbye!"
         end_call = True
     else:
-        messages = [{"role": m.role, "content": m.content} for m in history]
+        # This internal label is useful in the saved transcript and as
+        # outbound_purpose below, but it was never spoken aloud to the callee.
+        messages = [
+            {"role": m.role, "content": m.content}
+            for m in history
+            if not (
+                m.role == "assistant"
+                and (m.content or "").startswith("Outbound call purpose:")
+            )
+        ]
         is_outbound = "Outbound Call:" in (convo.title or "")
         if is_outbound:
             outbound_purpose = next(
