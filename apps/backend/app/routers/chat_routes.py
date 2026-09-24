@@ -738,23 +738,66 @@ _CALENDAR_DRAFT_MARKER = "[CALENDAR_EVENT_DRAFT]"
 
 def _extract_outbound_call_draft(reply_text: str) -> tuple[str, dict | None]:
     """Extract a structured outbound-call request for the chat approval card.
-    The number, purpose, and opening message remain reviewable by the user;
-    parsing a marker never places a call."""
-    idx = reply_text.find(_OUTBOUND_CALL_DRAFT_MARKER)
-    if idx == -1:
-        return reply_text, None
 
-    start = idx + len(_OUTBOUND_CALL_DRAFT_MARKER)
-    while start < len(reply_text) and reply_text[start].isspace():
-        start += 1
-    try:
-        data, consumed = json.JSONDecoder().raw_decode(reply_text[start:])
-    except (json.JSONDecodeError, TypeError):
-        return reply_text, None
-    if not isinstance(data, dict):
-        return reply_text, None
+    The model is instructed to add [OUTBOUND_CALL_DRAFT], but some replies
+    omit the marker and emit the exact JSON object directly. Accept only an
+    object with the three call-draft fields so that it can still be reviewed
+    in the UI. This parser never places a call.
+    """
+    marker_idx = reply_text.find(_OUTBOUND_CALL_DRAFT_MARKER)
+    decoder = json.JSONDecoder()
+    required_keys = {"to_number", "purpose", "opening_message"}
 
-    cleaned = (reply_text[:idx] + reply_text[start + consumed:]).strip()
+    def parse_at(start: int):
+        while start < len(reply_text) and reply_text[start].isspace():
+            start += 1
+        try:
+            data, consumed = decoder.raw_decode(reply_text[start:])
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        if not required_keys.issubset(data) or not all(
+            isinstance(data.get(key), str) for key in required_keys
+        ):
+            return None
+        return start, start + consumed, data
+
+    parsed = None
+    prefix_end = None
+    if marker_idx >= 0:
+        prefix_end = marker_idx
+        parsed = parse_at(marker_idx + len(_OUTBOUND_CALL_DRAFT_MARKER))
+
+    # Tolerate a model reply that omitted the marker but emitted the exact
+    # call-draft JSON object anyway. It still becomes a review card; the call
+    # action remains behind the user's separate Place Call button.
+    if parsed is None:
+        search_from = 0
+        while True:
+            candidate = reply_text.find("{", search_from)
+            if candidate < 0:
+                return reply_text, None
+            parsed = parse_at(candidate)
+            if parsed is not None:
+                prefix_end = candidate
+                break
+            search_from = candidate + 1
+
+    start, end, data = parsed
+    before = reply_text[:prefix_end].rstrip()
+    after = reply_text[end:].lstrip()
+
+    # If the model wrapped the object in a JSON code fence, remove those
+    # delimiters too so the natural-language reply remains readable.
+    if before.lower().endswith("```json"):
+        before = before[:-7].rstrip()
+    elif before.endswith("```"):
+        before = before[:-3].rstrip()
+    if after.startswith("```"):
+        after = after[3:].lstrip()
+
+    cleaned = "\n".join(part for part in (before, after) if part).strip()
     return cleaned, data
 
 
