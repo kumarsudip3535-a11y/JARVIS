@@ -268,8 +268,8 @@ def build_outbound_phone_persona_context(business_name: str, purpose: str, extra
         "confirmation. End politely when the purpose is complete.",
     ]
     if extra_persona:
-        lines.append("Additional phone instructions:\\n" + extra_persona)
-    return "\\n\\n".join(lines)
+        lines.append("Additional phone instructions:\n" + extra_persona)
+    return "\n\n".join(lines)
 
 
 def build_gather_twiml(
