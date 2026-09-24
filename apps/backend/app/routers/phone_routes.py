@@ -239,9 +239,26 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)) -> Resp
         end_call = True
     else:
         messages = [{"role": m.role, "content": m.content} for m in history]
-        persona = phone_agent.build_phone_persona_context(
-            settings.phone_agent_business_name, settings.phone_agent_persona
-        )
+        is_outbound = "Outbound Call:" in (convo.title or "")
+        if is_outbound:
+            outbound_purpose = next(
+                (
+                    (message.content or "").partition(":")[2].strip()
+                    for message in history
+                    if message.role == "assistant"
+                    and (message.content or "").startswith("Outbound call purpose:")
+                ),
+                "the request stated in the opening message",
+            )
+            persona = phone_agent.build_outbound_phone_persona_context(
+                settings.phone_agent_business_name,
+                outbound_purpose,
+                settings.phone_agent_persona,
+            )
+        else:
+            persona = phone_agent.build_phone_persona_context(
+                settings.phone_agent_business_name, settings.phone_agent_persona
+            )
         provider = get_ai_provider()
         try:
             raw_reply = await _generate_phone_reply(provider, messages, persona)
