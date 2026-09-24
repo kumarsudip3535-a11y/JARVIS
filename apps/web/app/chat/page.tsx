@@ -36,7 +36,7 @@ type TallyCardStatus = "idle" | "sending" | "success" | "error";
 // until he presses the button.
 type CalendarCardStatus = "idle" | "sending" | "success" | "error";
 
-type OutboundCallCardStatus = "idle" | "sending" | "success" | "error";
+type OutboundCallCardStatus = "idle" | "sending" | "success" | "error" | "superseded";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -503,7 +503,15 @@ export default function ChatPage() {
       setAgentId(result.agent_id ?? null);
       setAgentName(result.agent_name ?? null);
       setMessages((prev) => [
-        ...prev,
+        ...prev.map((message) =>
+          result.outbound_call_draft && message.outboundCallStatus === "idle"
+            ? {
+                ...message,
+                outboundCallStatus: "superseded" as OutboundCallCardStatus,
+                outboundCallResultMessage: "Replaced by a newer draft.",
+              }
+            : message
+        ),
         {
           role: "assistant",
           content: result.reply,
@@ -561,7 +569,15 @@ export default function ChatPage() {
       setAgentId(result.agent_id ?? null);
       setAgentName(result.agent_name ?? null);
       setMessages((prev) => [
-        ...prev,
+        ...prev.map((message) =>
+          result.outbound_call_draft && message.outboundCallStatus === "idle"
+            ? {
+                ...message,
+                outboundCallStatus: "superseded" as OutboundCallCardStatus,
+                outboundCallResultMessage: "Replaced by a newer draft.",
+              }
+            : message
+        ),
         {
           role: "assistant",
           content: result.reply,
@@ -653,11 +669,37 @@ export default function ChatPage() {
     }
   }
 
+  function updateOutboundCallDraft(index: number, field: keyof OutboundCallDraft, value: string) {
+    setMessages((prev) =>
+      prev.map((message, i) =>
+        i === index && message.outboundCallStatus === "idle" && message.outboundCallDraft
+          ? {
+              ...message,
+              outboundCallDraft: { ...message.outboundCallDraft, [field]: value },
+            }
+          : message
+      )
+    );
+  }
+
   // Phase 22: this is the explicit approval action for a real outbound
   // Twilio call. Drafting a card in chat never calls anyone by itself.
   async function handlePlaceOutboundCall(index: number) {
     const target = messages[index];
-    if (!target?.outboundCallDraft) return;
+    if (!target?.outboundCallDraft || target.outboundCallStatus !== "idle") return;
+    if (!/^\+[1-9]\d{7,14}$/.test(target.outboundCallDraft.to_number.trim())) {
+      setMessages((prev) =>
+        prev.map((message, i) =>
+          i === index
+            ? {
+                ...message,
+                outboundCallResultMessage: "Enter a complete number with country code, such as +91 followed by the phone number.",
+              }
+            : message
+        )
+      );
+      return;
+    }
     setMessages((prev) =>
       prev.map((m, i) => i === index ? { ...m, outboundCallStatus: "sending" as OutboundCallCardStatus } : m)
     );
@@ -1058,24 +1100,65 @@ export default function ChatPage() {
               {m.role === "assistant" && m.outboundCallDraft && (
                 <div className="mt-3 border rounded-xl bg-white text-gray-900 p-3 text-sm space-y-2">
                   <p className="font-semibold">📞 Outbound call ready for your review</p>
-                  <p><span className="font-medium">To:</span> {m.outboundCallDraft.to_number}</p>
-                  <p><span className="font-medium">Purpose:</span> {m.outboundCallDraft.purpose}</p>
-                  <p className="text-xs text-gray-600">{m.outboundCallDraft.opening_message}</p>
-                  <p className="text-xs text-amber-700">Pressing Place Call starts a real phone call. Check the number and request first.</p>
-                  {m.outboundCallStatus === "success" ? (
-                    <p className="text-xs text-green-600">✅ {m.outboundCallResultMessage}</p>
+                  {m.outboundCallStatus === "superseded" ? (
+                    <p className="text-xs text-gray-600">
+                      This draft was replaced by a newer one. Do not place a call from this card.
+                    </p>
                   ) : (
                     <>
-                      {m.outboundCallStatus === "error" && (
-                        <p className="text-xs text-red-600">⚠️ {m.outboundCallResultMessage}</p>
+                      <label className="block space-y-1">
+                        <span className="font-medium">Phone number (include country code)</span>
+                        <input
+                          type="tel"
+                          value={m.outboundCallDraft.to_number}
+                          onChange={(e) => updateOutboundCallDraft(i, "to_number", e.target.value)}
+                          disabled={m.outboundCallStatus !== "idle"}
+                          className="w-full rounded-lg border px-3 py-2 text-sm disabled:bg-gray-100"
+                          autoComplete="tel"
+                        />
+                      </label>
+                      <label className="block space-y-1">
+                        <span className="font-medium">Purpose</span>
+                        <input
+                          type="text"
+                          value={m.outboundCallDraft.purpose}
+                          onChange={(e) => updateOutboundCallDraft(i, "purpose", e.target.value)}
+                          disabled={m.outboundCallStatus !== "idle"}
+                          className="w-full rounded-lg border px-3 py-2 text-sm disabled:bg-gray-100"
+                        />
+                      </label>
+                      <label className="block space-y-1">
+                        <span className="font-medium">Opening message</span>
+                        <textarea
+                          value={m.outboundCallDraft.opening_message}
+                          onChange={(e) => updateOutboundCallDraft(i, "opening_message", e.target.value)}
+                          disabled={m.outboundCallStatus !== "idle"}
+                          rows={3}
+                          className="w-full rounded-lg border px-3 py-2 text-sm disabled:bg-gray-100"
+                        />
+                      </label>
+                      <p className="text-xs text-amber-700">
+                        Check and correct the number before calling. Place Call starts a real phone call.
+                      </p>
+                      {m.outboundCallStatus === "success" ? (
+                        <p className="text-xs text-green-600">✅ {m.outboundCallResultMessage}</p>
+                      ) : (
+                        <>
+                          {m.outboundCallStatus === "error" && (
+                            <p className="text-xs text-red-600">⚠️ {m.outboundCallResultMessage}</p>
+                          )}
+                          {m.outboundCallResultMessage && m.outboundCallStatus === "idle" && (
+                            <p className="text-xs text-red-600">⚠️ {m.outboundCallResultMessage}</p>
+                          )}
+                          <button
+                            onClick={() => handlePlaceOutboundCall(i)}
+                            disabled={m.outboundCallStatus !== "idle"}
+                            className="bg-black text-white rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+                          >
+                            {m.outboundCallStatus === "sending" ? "Starting call..." : "Place Call"}
+                          </button>
+                        </>
                       )}
-                      <button
-                        onClick={() => handlePlaceOutboundCall(i)}
-                        disabled={m.outboundCallStatus === "sending" || m.outboundCallStatus === "error"}
-                        className="bg-black text-white rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
-                      >
-                        {m.outboundCallStatus === "sending" ? "Starting call..." : "Place Call"}
-                      </button>
                     </>
                   )}
                 </div>
