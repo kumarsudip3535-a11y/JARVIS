@@ -324,6 +324,12 @@ class Settings(BaseSettings):
     # can turn it on once he's comfortable with how calls are behaving.
     phone_agent_allow_web_search: bool = os.getenv("PHONE_AGENT_ALLOW_WEB_SEARCH", "false").lower() == "true"
     phone_agent_max_turns: int = int(os.getenv("PHONE_AGENT_MAX_TURNS", "15"))
+    # Twilio cannot wait indefinitely for a webhook response. Bound each
+    # phone-specific AI turn so a slow provider becomes a spoken fallback
+    # instead of Twilio's generic "application error" message.
+    phone_agent_reply_timeout_seconds: float = float(
+        os.getenv("PHONE_AGENT_REPLY_TIMEOUT_SECONDS", "10")
+    )
 
     class Config:
         env_file = ".env"
