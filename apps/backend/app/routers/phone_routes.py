@@ -46,7 +46,7 @@ router = APIRouter(prefix="/api/phone", tags=["phone"])
 
 async def _generate_phone_reply(provider, messages: list[dict], persona: str) -> str:
     """Run blocking AI generation off the event loop with a Twilio-safe cap."""
-    timeout = min(max(settings.phone_agent_reply_timeout_seconds, 1.0), 12.0)
+    timeout = min(max(settings.phone_agent_reply_timeout_seconds, 0.05), 12.0)
     return await asyncio.wait_for(
         asyncio.to_thread(
             provider.generate_reply,
