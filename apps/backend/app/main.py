@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import inspect, text
 from app.config import settings
 from app.database import Base, SessionLocal, engine
-from app.routers import auth_routes, chat_routes, memory_routes, knowledge_routes, skill_routes, tally_routes, code_routes, agent_routes, tool_routes, google_routes, phone_routes
+from app.routers import auth_routes, chat_routes, memory_routes, knowledge_routes, skill_routes, tally_routes, code_routes, agent_routes, tool_routes, google_routes, phone_routes, outbound_phone_routes
 from app.debug_agent import log_backend_exception
 from app import automation_engine
 
@@ -121,6 +121,7 @@ app.include_router(agent_routes.router)
 app.include_router(tool_routes.router)
 app.include_router(google_routes.router)
 app.include_router(phone_routes.router)
+app.include_router(outbound_phone_routes.router)
 
 
 # Phase 13 "Debugging Agent" (2026-09-20): permanently logs every unhandled
