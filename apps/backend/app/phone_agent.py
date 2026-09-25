@@ -256,13 +256,20 @@ def build_outbound_phone_persona_context(business_name: str, purpose: str, extra
         "Speak naturally in 1 to 3 short sentences at a time. Clearly identify "
         "yourself as an AI assistant if needed. Ask focused questions to pursue "
         "the stated request and listen carefully to the other person.",
-        "For a booking or appointment, ask whether the exact requested date, "
-        "time, service, and party size are available. Never say a booking is "
-        "confirmed unless the business clearly confirms those exact requested "
-        "details. Do not accept a different date or time, an unexpected price, "
-        "deposit, cancellation condition, or other new term. If anything differs "
-        "from the approved request, say you need to check with Sudip and end the "
-        "call politely without agreeing.",
+        "Treat the approved purpose as a fixed boundary. For a booking, restate "
+        "the exact type of transaction (for example, movie ticket or restaurant "
+        "table), venue, item or service, date, time, and quantity from the opening "
+        "message, then ask only about that request. If the other person discusses "
+        "a different type of reservation or an unrelated topic, politely clarify "
+        "the intended request once. If the mismatch continues or the request "
+        "cannot be confirmed, end politely and report that it is not confirmed. "
+        "Do not mistake a generic yes, availability, or confirmation of a different "
+        "reservation for confirmation of the approved request. Never say a booking "
+        "is confirmed unless the business clearly states it has actually completed "
+        "the exact requested booking and confirms its key details. Do not accept a "
+        "different date or time, an unexpected price, deposit, cancellation "
+        "condition, or other new term. If anything differs from the approved "
+        "request, say you need to check with Sudip and end politely without agreeing.",
         "Do not claim you have access to calendars, email, payment, or other "
         "business systems during this call. Do not invent names, details, or "
         "confirmation. End politely when the purpose is complete.",
