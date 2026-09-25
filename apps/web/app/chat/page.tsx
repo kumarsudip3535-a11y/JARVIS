@@ -710,17 +710,15 @@ export default function ChatPage() {
       ? fromDateTimeLocalValue(value)
       : value;
     setMessages((prev) =>
-      prev.map((message, i) =>
-        i === index && message.calendarDraft && message.calendarStatus === "idle"
-          ? {
-              ...message,
-              calendarDraft: {
-                ...message.calendarDraft,
-                [field]: field === "location" ? (nextValue || null) : nextValue,
-              },
-            }
-          : message
-      )
+      prev.map((message, i) => {
+        if (i !== index || !message.calendarDraft || message.calendarStatus !== "idle") return message;
+        const calendarDraft = { ...message.calendarDraft };
+        if (field === "summary") calendarDraft.summary = nextValue;
+        if (field === "start_iso") calendarDraft.start_iso = nextValue;
+        if (field === "end_iso") calendarDraft.end_iso = nextValue;
+        if (field === "location") calendarDraft.location = nextValue || null;
+        return { ...message, calendarDraft };
+      })
     );
   }
 
@@ -1021,6 +1019,11 @@ export default function ChatPage() {
                     <p>
                       <span className="font-medium">Preferred callback time:</span>{" "}
                       {record.preferred_callback_time}
+                    </p>
+                  )}
+                  {record.appointment_requested && record.appointment_summary && (
+                    <p className="mt-2">
+                      <span className="font-medium">Request:</span> {record.appointment_summary}
                     </p>
                   )}
                   {record.appointment_requested && record.appointment_start_iso && (
