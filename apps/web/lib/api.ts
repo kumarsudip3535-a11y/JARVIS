@@ -453,6 +453,8 @@ export type CalendarEventDraft = {
   end_iso: string;
   description: string | null;
   location: string | null;
+  reminder_minutes_before?: number | null;
+  use_default_reminder?: boolean;
 };
 
 export type CalendarEventResult = {
@@ -522,6 +524,10 @@ export type PhoneCallRecord = {
   reason: string | null;
   preferred_callback_time: string | null;
   callback_requested: boolean;
+  appointment_requested: boolean;
+  appointment_summary: string | null;
+  appointment_start_iso: string | null;
+  appointment_location: string | null;
   is_read: boolean;
   created_at: string;
   updated_at: string;

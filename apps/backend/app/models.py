@@ -292,6 +292,12 @@ class PhoneCallRecord(Base):
     caller_name = Column(String, nullable=True)
     reason = Column(Text, nullable=True)
     preferred_callback_time = Column(String, nullable=True)
+    # Incoming appointment requests are captured as unconfirmed requests.
+    # Calendar entries are created only after Sudip reviews the request.
+    appointment_requested = Column(Boolean, nullable=False, default=False)
+    appointment_summary = Column(Text, nullable=True)
+    appointment_start_iso = Column(String, nullable=True)
+    appointment_location = Column(Text, nullable=True)
     callback_requested = Column(Boolean, nullable=False, default=False)
     is_read = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

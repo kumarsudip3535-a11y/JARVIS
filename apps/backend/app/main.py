@@ -67,6 +67,26 @@ def _ensure_conversation_phone_call_sid_column():
         conn.execute(text("ALTER TABLE conversations ADD COLUMN phone_call_sid VARCHAR"))
 
 
+def _ensure_phone_call_appointment_columns():
+    """Idempotently add structured appointment-request fields to existing
+    phone_call_records tables. Base.metadata.create_all handles new installs;
+    this migration preserves existing incoming-call records in place."""
+    inspector = inspect(engine)
+    if "phone_call_records" not in inspector.get_table_names():
+        return
+    existing_columns = {c["name"] for c in inspector.get_columns("phone_call_records")}
+    additions = {
+        "appointment_requested": "BOOLEAN DEFAULT FALSE",
+        "appointment_summary": "TEXT",
+        "appointment_start_iso": "VARCHAR",
+        "appointment_location": "TEXT",
+    }
+    with engine.begin() as conn:
+        for name, sql_type in additions.items():
+            if name not in existing_columns:
+                conn.execute(text(f"ALTER TABLE phone_call_records ADD COLUMN {name} {sql_type}"))
+
+
 def _ensure_conversation_agent_id_column():
     """Lightweight, idempotent startup migration (this project deliberately
     has no Alembic - see progress-tracker.md). Base.metadata.create_all above
@@ -90,6 +110,7 @@ _ensure_conversation_agent_id_column()
 _ensure_agent_custom_tool_ids_column()
 _ensure_agent_allow_email_calendar_column()
 _ensure_conversation_phone_call_sid_column()
+_ensure_phone_call_appointment_columns()
 
 app = FastAPI(title="JARVIS Backend")
 

@@ -236,6 +236,8 @@ def create_calendar_event(
             draft.end_iso,
             description=draft.description,
             location=draft.location,
+            reminder_minutes_before=draft.reminder_minutes_before,
+            use_default_reminder=draft.use_default_reminder,
         )
     except google_client.GoogleAuthError as e:
         raise HTTPException(status_code=502, detail=str(e))
