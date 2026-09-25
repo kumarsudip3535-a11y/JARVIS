@@ -265,8 +265,13 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)) -> Resp
                 settings.phone_agent_persona,
             )
         else:
+            current_local_time = datetime.datetime.now(
+                phone_agent.phone_timezone(settings.phone_agent_timezone)
+            ).isoformat(timespec="seconds")
             persona = phone_agent.build_phone_persona_context(
-                settings.phone_agent_business_name, settings.phone_agent_persona
+                settings.phone_agent_business_name,
+                settings.phone_agent_persona,
+                current_local_time=current_local_time,
             )
         provider = get_ai_provider()
         try:
@@ -288,8 +293,12 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)) -> Resp
                 "I'm having some trouble right now - please try calling back in "
                 f"a moment. {phone_agent.END_CALL_MARKER}"
             )
-        reply_text, callback_request = phone_agent.extract_callback_request_marker(raw_reply)
-        if callback_request is not None:
+        if is_outbound:
+            reply_text, appointment_request = raw_reply, None
+        else:
+            reply_text, appointment_request = phone_agent.extract_appointment_request_marker(raw_reply)
+        reply_text, callback_request = phone_agent.extract_callback_request_marker(reply_text)
+        if callback_request is not None or appointment_request is not None:
             record = _upsert_phone_record(
                 db,
                 convo.user_id,
@@ -297,13 +306,18 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)) -> Resp
                 call_sid,
                 form.get("From", "unknown number"),
             )
-            record.caller_name = callback_request["caller_name"]
-            record.reason = callback_request["reason"]
-            record.preferred_callback_time = callback_request["preferred_time"]
-            record.callback_requested = True
-            # A completed callback request is always unread, even if the
-            # owner happened to mark the initial call notification read
-            # while the call was still in progress.
+            if callback_request is not None:
+                record.caller_name = callback_request["caller_name"]
+                record.reason = callback_request["reason"]
+                record.preferred_callback_time = callback_request["preferred_time"]
+                record.callback_requested = True
+            if appointment_request is not None:
+                record.caller_name = appointment_request["caller_name"] or record.caller_name
+                record.appointment_requested = True
+                record.appointment_summary = appointment_request["summary"]
+                record.appointment_start_iso = appointment_request["start_iso"]
+                record.appointment_location = appointment_request["location"]
+            # Every newly captured request is surfaced again as unread.
             record.is_read = False
             db.commit()
         reply_text, end_call = phone_agent.extract_end_call_marker(reply_text)
