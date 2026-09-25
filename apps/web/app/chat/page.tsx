@@ -50,6 +50,7 @@ type ChatMessage = {
   outboundCallDraft?: OutboundCallDraft;
   outboundCallStatus?: OutboundCallCardStatus;
   outboundCallResultMessage?: string;
+  appointmentRecordId?: number;
 };
 
 function tallyDraftTotal(draft: TallyBillDraft): number {
@@ -77,6 +78,25 @@ function formatEventTime(iso: string): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function calendarDraftIsValid(draft: CalendarEventDraft): boolean {
+  const start = new Date(draft.start_iso).getTime();
+  const end = new Date(draft.end_iso).getTime();
+  return Boolean(draft.summary.trim()) && Number.isFinite(start) && Number.isFinite(end) && end > start;
+}
+
+function toDateTimeLocalValue(iso: string): string {
+  const date = new Date(iso);
+  if (isNaN(date.getTime())) return "";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function fromDateTimeLocalValue(value: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return isNaN(date.getTime()) ? "" : date.toISOString();
 }
 
 // Code execution (Phase 12 "Coding Agent" — added 2026-09-20). The backend
@@ -172,6 +192,7 @@ export default function ChatPage() {
   // Phase 20: unread incoming calls/callback requests, refreshed while
   // JARVIS is open so a completed phone call appears without asking in chat.
   const [phoneRecords, setPhoneRecords] = useState<PhoneCallRecord[]>([]);
+  const [preparedAppointmentIds, setPreparedAppointmentIds] = useState<number[]>([]);
 
   // Agent Factory v1 (custom feature, see progress-tracker.md): chatting via
   // /chat?agent=<id> starts (or continues) a conversation with a named
@@ -653,6 +674,17 @@ export default function ChatPage() {
             : m
         )
       );
+      if (target.appointmentRecordId != null) {
+        try {
+          await markPhoneCallRead(target.appointmentRecordId);
+          setPhoneRecords((records) =>
+            records.filter((record) => record.id !== target.appointmentRecordId)
+          );
+        } catch {
+          // The Calendar event succeeded; leave the request card visible if
+          // marking its notification read failed, but don't report event failure.
+        }
+      }
     } catch (err) {
       setMessages((prev) =>
         prev.map((m, i) =>
@@ -667,6 +699,57 @@ export default function ChatPage() {
         )
       );
     }
+  }
+
+  function updateCalendarDraft(
+    index: number,
+    field: "summary" | "start_iso" | "end_iso" | "location",
+    value: string
+  ) {
+    const nextValue = field === "start_iso" || field === "end_iso"
+      ? fromDateTimeLocalValue(value)
+      : value;
+    setMessages((prev) =>
+      prev.map((message, i) =>
+        i === index && message.calendarDraft && message.calendarStatus === "idle"
+          ? {
+              ...message,
+              calendarDraft: {
+                ...message.calendarDraft,
+                [field]: field === "location" ? (nextValue || null) : nextValue,
+              },
+            }
+          : message
+      )
+    );
+  }
+
+  function updateCalendarReminder(index: number, value: string) {
+    setMessages((prev) =>
+      prev.map((message, i) => {
+        if (i !== index || !message.calendarDraft || message.calendarStatus !== "idle") return message;
+        if (value === "default") {
+          return {
+            ...message,
+            calendarDraft: { ...message.calendarDraft, use_default_reminder: true, reminder_minutes_before: null },
+          };
+        }
+        if (value === "none") {
+          return {
+            ...message,
+            calendarDraft: { ...message.calendarDraft, use_default_reminder: false, reminder_minutes_before: null },
+          };
+        }
+        return {
+          ...message,
+          calendarDraft: {
+            ...message.calendarDraft,
+            use_default_reminder: false,
+            reminder_minutes_before: Number(value),
+          },
+        };
+      })
+    );
   }
 
   function updateOutboundCallDraft(index: number, field: keyof OutboundCallDraft, value: string) {
@@ -760,6 +843,64 @@ export default function ChatPage() {
     } finally {
       setAddUserBusy(false);
     }
+  }
+
+  function prepareAppointmentCalendarDraft(record: PhoneCallRecord) {
+    if (!record.appointment_requested || !record.appointment_summary || !record.appointment_start_iso) return;
+    const start = new Date(record.appointment_start_iso);
+    if (isNaN(start.getTime())) {
+      setError("This appointment request has an invalid date or time. Review the call transcript before adding it.");
+      return;
+    }
+    const end = new Date(start.getTime() + 30 * 60 * 1000);
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        content: "Review this appointment request before adding it. The caller's request is not a confirmed booking.",
+        appointmentRecordId: record.id,
+        calendarStatus: "idle",
+        calendarDraft: {
+          summary: `Appointment request (not confirmed): ${record.appointment_summary}`,
+          start_iso: start.toISOString(),
+          end_iso: end.toISOString(),
+          description: `Unconfirmed appointment request from ${record.caller_name || "caller"} (${record.caller_number}). This is a request only; the appointment has not been confirmed.`,
+          location: record.appointment_location,
+          use_default_reminder: true,
+          reminder_minutes_before: null,
+        },
+      },
+    ]);
+    setPreparedAppointmentIds((ids) => ids.includes(record.id) ? ids : [...ids, record.id]);
+  }
+
+  function prepareAppointmentCalendarDraft(record: PhoneCallRecord) {
+    if (!record.appointment_requested || !record.appointment_summary || !record.appointment_start_iso) return;
+    const start = new Date(record.appointment_start_iso);
+    if (isNaN(start.getTime())) {
+      setError("This appointment request has an invalid date or time. Review the call transcript before adding it.");
+      return;
+    }
+    const end = new Date(start.getTime() + 30 * 60 * 1000);
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        content: "Review this appointment request before adding it. The caller's request is not a confirmed booking.",
+        appointmentRecordId: record.id,
+        calendarStatus: "idle",
+        calendarDraft: {
+          summary: `Appointment request (not confirmed): ${record.appointment_summary}`,
+          start_iso: start.toISOString(),
+          end_iso: end.toISOString(),
+          description: `Unconfirmed appointment request from ${record.caller_name || "caller"} (${record.caller_number}). This is a request only; the appointment has not been confirmed.`,
+          location: record.appointment_location,
+          use_default_reminder: true,
+          reminder_minutes_before: null,
+        },
+      },
+    ]);
+    setPreparedAppointmentIds((ids) => ids.includes(record.id) ? ids : [...ids, record.id]);
   }
 
   async function dismissPhoneRecord(id: number) {
@@ -887,7 +1028,11 @@ export default function ChatPage() {
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <p className="font-semibold">
-                    {record.callback_requested ? "📞 New callback request" : "📞 New incoming call"}
+                    {record.appointment_requested
+                      ? "📅 Appointment request — not confirmed"
+                      : record.callback_requested
+                        ? "📞 New callback request"
+                        : "📞 New incoming call"}
                   </p>
                   <p className="mt-1">
                     {record.caller_name ? `${record.caller_name} · ` : ""}
@@ -903,9 +1048,39 @@ export default function ChatPage() {
                   )}
                   {record.preferred_callback_time && (
                     <p>
-                      <span className="font-medium">Preferred time:</span>{" "}
+                      <span className="font-medium">Preferred callback time:</span>{" "}
                       {record.preferred_callback_time}
                     </p>
+                  )}
+                  {record.appointment_requested && record.appointment_start_iso && (
+                    <p className="mt-2">
+                      <span className="font-medium">Requested appointment:</span>{" "}
+                      {formatEventTime(record.appointment_start_iso)}
+                    </p>
+                  )}
+                  {record.appointment_location && (
+                    <p><span className="font-medium">Location:</span> {record.appointment_location}</p>
+                  )}
+                  {record.appointment_requested && (
+                    <div className="mt-2">
+                      <p className="text-xs text-amber-800">
+                        This is a request, not a confirmed appointment. Review it before adding anything to your calendar.
+                      </p>
+                      {record.appointment_start_iso && (
+                        preparedAppointmentIds.includes(record.id) ? (
+                          <p className="mt-2 text-xs font-medium text-green-800">
+                            Calendar draft added below. Review its time and reminder before creating the event.
+                          </p>
+                        ) : (
+                          <button
+                            onClick={() => prepareAppointmentCalendarDraft(record)}
+                            className="mt-2 rounded-lg border border-amber-500 bg-white px-3 py-1.5 text-xs font-medium hover:bg-amber-100"
+                          >
+                            Review calendar reminder
+                          </button>
+                        )
+                      )}
+                    </div>
                   )}
                 </div>
                 <button
@@ -1165,18 +1340,75 @@ export default function ChatPage() {
               )}
               {m.role === "assistant" && m.calendarDraft && (
                 <div className="mt-3 border rounded-xl bg-white text-gray-900 p-3 text-sm space-y-2">
-                  <p className="font-semibold">📅 Event ready for your calendar</p>
-                  <p className="font-medium">{m.calendarDraft.summary}</p>
-                  <p className="text-gray-500">
-                    {formatEventTime(m.calendarDraft.start_iso)} – {formatEventTime(m.calendarDraft.end_iso)}
-                  </p>
-                  {m.calendarDraft.location && (
-                    <p className="text-xs text-gray-500">📍 {m.calendarDraft.location}</p>
-                  )}
+                  <p className="font-semibold">📅 Review calendar event</p>
+                  <label className="block space-y-1">
+                    <span className="font-medium">Title</span>
+                    <input
+                      type="text"
+                      value={m.calendarDraft.summary}
+                      onChange={(e) => updateCalendarDraft(i, "summary", e.target.value)}
+                      disabled={m.calendarStatus !== "idle"}
+                      className="w-full rounded-lg border px-3 py-2 text-sm disabled:bg-gray-100"
+                    />
+                  </label>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <label className="block space-y-1">
+                      <span className="font-medium">Starts</span>
+                      <input
+                        type="datetime-local"
+                        value={toDateTimeLocalValue(m.calendarDraft.start_iso)}
+                        onChange={(e) => updateCalendarDraft(i, "start_iso", e.target.value)}
+                        disabled={m.calendarStatus !== "idle"}
+                        className="w-full rounded-lg border px-3 py-2 text-sm disabled:bg-gray-100"
+                      />
+                    </label>
+                    <label className="block space-y-1">
+                      <span className="font-medium">Ends</span>
+                      <input
+                        type="datetime-local"
+                        value={toDateTimeLocalValue(m.calendarDraft.end_iso)}
+                        onChange={(e) => updateCalendarDraft(i, "end_iso", e.target.value)}
+                        disabled={m.calendarStatus !== "idle"}
+                        className="w-full rounded-lg border px-3 py-2 text-sm disabled:bg-gray-100"
+                      />
+                    </label>
+                  </div>
+                  <label className="block space-y-1">
+                    <span className="font-medium">Location (optional)</span>
+                    <input
+                      type="text"
+                      value={m.calendarDraft.location || ""}
+                      onChange={(e) => updateCalendarDraft(i, "location", e.target.value)}
+                      disabled={m.calendarStatus !== "idle"}
+                      className="w-full rounded-lg border px-3 py-2 text-sm disabled:bg-gray-100"
+                    />
+                  </label>
+                  <label className="block space-y-1">
+                    <span className="font-medium">Reminder</span>
+                    <select
+                      value={m.calendarDraft.use_default_reminder !== false
+                        ? "default"
+                        : m.calendarDraft.reminder_minutes_before == null
+                          ? "none"
+                          : String(m.calendarDraft.reminder_minutes_before)}
+                      onChange={(e) => updateCalendarReminder(i, e.target.value)}
+                      disabled={m.calendarStatus !== "idle"}
+                      className="w-full rounded-lg border px-3 py-2 text-sm disabled:bg-gray-100"
+                    >
+                      <option value="default">Use Google Calendar default</option>
+                      <option value="none">No reminder</option>
+                      <option value="10">10 minutes before</option>
+                      <option value="30">30 minutes before</option>
+                      <option value="60">1 hour before</option>
+                      <option value="1440">1 day before</option>
+                    </select>
+                  </label>
                   {m.calendarDraft.description && (
-                    <p className="text-xs text-gray-500">{m.calendarDraft.description}</p>
+                    <p className="text-xs text-gray-600">{m.calendarDraft.description}</p>
                   )}
-
+                  <p className="text-xs text-amber-700">
+                    Check the details first. Nothing is added until you click Create Event.
+                  </p>
                   {m.calendarStatus === "success" ? (
                     <p className="text-xs text-green-600">✅ {m.calendarResultMessage}</p>
                   ) : (
@@ -1186,7 +1418,7 @@ export default function ChatPage() {
                       )}
                       <button
                         onClick={() => handleCreateEvent(i)}
-                        disabled={m.calendarStatus === "sending"}
+                        disabled={m.calendarStatus === "sending" || !calendarDraftIsValid(m.calendarDraft)}
                         className="bg-black text-white rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
                       >
                         {m.calendarStatus === "sending"
