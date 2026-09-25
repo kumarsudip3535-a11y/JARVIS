@@ -874,35 +874,6 @@ export default function ChatPage() {
     setPreparedAppointmentIds((ids) => ids.includes(record.id) ? ids : [...ids, record.id]);
   }
 
-  function prepareAppointmentCalendarDraft(record: PhoneCallRecord) {
-    if (!record.appointment_requested || !record.appointment_summary || !record.appointment_start_iso) return;
-    const start = new Date(record.appointment_start_iso);
-    if (isNaN(start.getTime())) {
-      setError("This appointment request has an invalid date or time. Review the call transcript before adding it.");
-      return;
-    }
-    const end = new Date(start.getTime() + 30 * 60 * 1000);
-    setMessages((prev) => [
-      ...prev,
-      {
-        role: "assistant",
-        content: "Review this appointment request before adding it. The caller's request is not a confirmed booking.",
-        appointmentRecordId: record.id,
-        calendarStatus: "idle",
-        calendarDraft: {
-          summary: `Appointment request (not confirmed): ${record.appointment_summary}`,
-          start_iso: start.toISOString(),
-          end_iso: end.toISOString(),
-          description: `Unconfirmed appointment request from ${record.caller_name || "caller"} (${record.caller_number}). This is a request only; the appointment has not been confirmed.`,
-          location: record.appointment_location,
-          use_default_reminder: true,
-          reminder_minutes_before: null,
-        },
-      },
-    ]);
-    setPreparedAppointmentIds((ids) => ids.includes(record.id) ? ids : [...ids, record.id]);
-  }
-
   async function dismissPhoneRecord(id: number) {
     try {
       await markPhoneCallRead(id);
