@@ -53,6 +53,7 @@ _END_CALL_MARKER = "[END_CALL]"
 # a real public name instead.
 END_CALL_MARKER = _END_CALL_MARKER
 _CALLBACK_REQUEST_MARKER = "[CALLBACK_REQUEST]"
+_APPOINTMENT_REQUEST_MARKER = "[APPOINTMENT_REQUEST]"
 
 
 def phone_timezone(timezone_name: str) -> datetime.tzinfo:
@@ -122,7 +123,9 @@ def build_greeting_text(business_name: str, custom_greeting: str) -> str:
     return f"Hi, thanks for calling {name}. You're speaking with an AI assistant. How can I help you today?"
 
 
-def build_phone_persona_context(business_name: str, extra_persona: str) -> str:
+def build_phone_persona_context(
+    business_name: str, extra_persona: str, current_local_time: str | None = None
+) -> str:
     """The system-prompt overlay passed as generate_reply()'s agent_context
     for every phone-call reply - same mechanism Agent Factory v1's
     _agent_context_block already uses, just phone-specific. Deliberately
@@ -157,6 +160,18 @@ def build_phone_persona_context(business_name: str, extra_persona: str) -> str:
         '[CALLBACK_REQUEST]{"caller_name":"...","reason":"...","preferred_time":"..."}. '
         "Use valid JSON with those exact keys. The marker is removed before speech, "
         "so the caller will not hear it. Do not emit it until all three values are known.",
+        "5. If the caller asks to arrange an appointment for Sudip, you cannot "
+        "book or confirm it and you have no calendar access. Collect the appointment "
+        "type or reason, requested date and start time, and location if provided. Ask "
+        "for the date/time if missing; use the current local date/time below to resolve "
+        "relative words like tomorrow, never guess. Tell the caller this is only a "
+        "request for Sudip to review, not a confirmed appointment. Once the details "
+        "are clear, append this marker at the end of your reply: "
+        '[APPOINTMENT_REQUEST]{"caller_name":"...","summary":"...","start_iso":"YYYY-MM-DDTHH:MM:SS+05:30","location":"..."}. '
+        "Use an RFC3339 timestamp with the configured local offset, valid JSON, and "
+        "these exact keys. Do not emit the marker if the date or start time is unclear. "
+        "Do not imply that an event was added to a calendar or that the appointment is booked.",
+        f"Current local date/time for resolving relative dates: {current_local_time or 'unknown; ask for an exact date instead of guessing'}.",
         f'When the conversation has naturally wrapped up (the caller said '
         f"goodbye, or there's nothing more you can help with), end your reply "
         f"with the exact text {_END_CALL_MARKER} by itself - this is a real "
@@ -166,6 +181,43 @@ def build_phone_persona_context(business_name: str, extra_persona: str) -> str:
     if extra_persona:
         lines.append("Additional instructions Sudeep has set for phone calls specifically:\n" + extra_persona)
     return "\n\n".join(lines)
+
+
+def extract_appointment_request_marker(reply_text: str) -> "tuple[str, dict | None]":
+    """Parse a fully specified incoming appointment request without treating it
+    as a confirmed booking. Relative dates must already have been resolved by
+    the model using the current phone-local timestamp supplied in its prompt."""
+    text = (reply_text or "").strip()
+    idx = text.find(_APPOINTMENT_REQUEST_MARKER)
+    if idx == -1:
+        return text, None
+
+    json_start = idx + len(_APPOINTMENT_REQUEST_MARKER)
+    while json_start < len(text) and text[json_start].isspace():
+        json_start += 1
+    try:
+        data, consumed = json.JSONDecoder().raw_decode(text[json_start:])
+    except (json.JSONDecodeError, TypeError):
+        return text[:idx].strip(), None
+    if not isinstance(data, dict):
+        return text[:idx].strip(), None
+
+    summary = str(data.get("summary") or "").strip()[:500]
+    start_iso = str(data.get("start_iso") or "").strip()
+    try:
+        parsed = datetime.datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return text[:idx].strip(), None
+    if not summary or parsed.tzinfo is None:
+        return text[:idx].strip(), None
+
+    request = {
+        "caller_name": str(data.get("caller_name") or "").strip()[:200],
+        "summary": summary,
+        "start_iso": start_iso,
+        "location": str(data.get("location") or "").strip()[:300] or None,
+    }
+    return (text[:idx] + text[json_start + consumed:]).strip(), request
 
 
 def extract_callback_request_marker(reply_text: str) -> "tuple[str, dict | None]":
