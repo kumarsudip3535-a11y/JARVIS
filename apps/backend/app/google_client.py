@@ -487,6 +487,8 @@ def create_calendar_event(
     end_iso: str,
     description: str | None = None,
     location: str | None = None,
+    reminder_minutes_before: int | None = None,
+    use_default_reminder: bool = True,
 ) -> dict:
     """Actually creates the real event - ONLY ever called from the
     /api/google/calendar/create-event endpoint (google_routes.py), which
@@ -505,6 +507,17 @@ def create_calendar_event(
         body["description"] = description
     if location:
         body["location"] = location
+    if use_default_reminder:
+        body["reminders"] = {"useDefault": True}
+    else:
+        body["reminders"] = {
+            "useDefault": False,
+            "overrides": (
+                [{"method": "popup", "minutes": reminder_minutes_before}]
+                if reminder_minutes_before is not None
+                else []
+            ),
+        }
 
     try:
         resp = httpx.post(
