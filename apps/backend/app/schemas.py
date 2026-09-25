@@ -70,19 +70,15 @@ class OutboundCallDraft(BaseModel):
 
 
 class CalendarEventDraft(BaseModel):
-    """Phase 19 "Email + Calendar": mirrors TallyBillDraft's role exactly -
-    set only when JARVIS's reply included a [CALENDAR_EVENT_DRAFT] block (see
-    ai_provider.py's system prompt and chat_routes.py's
-    _extract_calendar_draft), so the frontend can render a review card with a
-    "Create Event" button instead of showing raw JSON. A real calendar event
-    is externally visible (can notify attendees, blocks real time) so this is
-    NEVER created directly from a tool call - only a real button click
-    (POST /api/google/calendar/create-event) does that."""
+    """A reviewable calendar event. Calendar writes require a separate user click."""
     summary: str
     start_iso: str  # RFC3339, e.g. "2026-09-25T15:00:00+05:30"
     end_iso: str
     description: str | None = None
     location: str | None = None
+    # None with use_default_reminder=True uses Google Calendar's defaults.
+    reminder_minutes_before: int | None = Field(default=None, ge=0, le=40320)
+    use_default_reminder: bool = True
 
 class ChatMessageOut(BaseModel):
     conversation_id: int
@@ -313,6 +309,10 @@ class PhoneCallRecordOut(BaseModel):
     reason: str | None = None
     preferred_callback_time: str | None = None
     callback_requested: bool
+    appointment_requested: bool = False
+    appointment_summary: str | None = None
+    appointment_start_iso: str | None = None
+    appointment_location: str | None = None
     is_read: bool
     created_at: datetime
     updated_at: datetime
