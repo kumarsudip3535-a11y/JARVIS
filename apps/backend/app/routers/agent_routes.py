@@ -33,6 +33,7 @@ def _to_out(agent: Agent) -> AgentOut:
         allow_web_search=agent.allow_web_search,
         allow_tally_billing=agent.allow_tally_billing,
         allow_email_calendar=agent.allow_email_calendar,
+        allow_team_management=agent.allow_team_management,
         assigned_skill_ids=skill_ids,
         assigned_custom_tool_ids=tool_ids,
         status=agent.status,
@@ -140,6 +141,7 @@ def create_agent(
         allow_web_search=payload.allow_web_search,
         allow_tally_billing=payload.allow_tally_billing,
         allow_email_calendar=payload.allow_email_calendar,
+        allow_team_management=payload.allow_team_management,
         assigned_skill_ids=json.dumps(skill_ids),
         assigned_custom_tool_ids=json.dumps(tool_ids),
         status="active",
@@ -202,6 +204,8 @@ def update_agent(
         agent.allow_tally_billing = payload.allow_tally_billing
     if payload.allow_email_calendar is not None:
         agent.allow_email_calendar = payload.allow_email_calendar
+    if payload.allow_team_management is not None:
+        agent.allow_team_management = payload.allow_team_management
     if payload.assigned_skill_ids is not None:
         agent.assigned_skill_ids = json.dumps(
             _valid_skill_ids(db, current_user.id, payload.assigned_skill_ids)

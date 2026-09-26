@@ -8,7 +8,10 @@ from sqlalchemy.sql import func
 
 from app.config import settings
 from app.database import SessionLocal, get_db
-from app.models import User, Conversation, Message, Memory, Skill, Agent, CustomTool, Automation, GoogleAccount
+from app.models import (
+    User, Conversation, Message, Memory, Skill, Agent, CustomTool, Automation, GoogleAccount,
+    TeamMember, TeamTask,
+)
 from app.schemas import (
     ChatMessageIn, ChatMessageOut, ConversationOut, TallyBillDraft, TallyTaxLine, CalendarEventDraft, OutboundCallDraft,
 )
@@ -21,6 +24,7 @@ from app import custom_tools as custom_tools_module
 from app import automation_engine
 from app import google_client
 from app import phone_agent
+from app import firebase_attendance_client
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -782,6 +786,284 @@ def _make_create_calendar_event_confirmed_query(db: Session, user_id: int):
     return _query
 
 
+# ============================================================================
+# Phase 23 "Team management" (added 2026-09-26, scoped with Sudeep via 3
+# AskUserQuestion questions - see progress-tracker.md). His own v1 choice:
+# a chat-based team tracker, SS Retail Services only, with real attendance
+# pulled in from the separate SS Retail Attendance app (see
+# firebase_attendance_client.py). All five tools below write only to
+# JARVIS's own TeamMember/TeamTask tables - never the attendance app's data,
+# which this module only ever reads - so, unlike Tally/calendar, they're
+# called live with no review card (the same tier as the existing
+# create_automation/list_automations/cancel_automation tools).
+# ============================================================================
+
+
+def _aware_utc(dt):
+    """Normalizes a datetime for comparison against an aware "now". SQLite
+    (used for local/dev testing - see progress-tracker.md) doesn't actually
+    preserve timezone info on read-back even for a DateTime(timezone=True)
+    column, so a due_date/completed_at can come back naive even though it
+    was written as an aware datetime; treated as UTC here (this project's
+    own convention - every "now" computed in this file uses
+    datetime.timezone.utc) rather than letting the comparison raise
+    TypeError. A no-op against Postgres, which always returns real
+    timezone-aware values for a timestamptz column."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=datetime.timezone.utc)
+    return dt
+
+
+def _find_team_member(db: Session, user_id: int, member_name: str):
+    """Case-insensitive substring match against the active roster. Returns
+    (member, None) on exactly one match, or (None, error_message) for zero
+    or more than one match - never guesses which person was meant, the same
+    "ambiguous match tells you so instead of picking one" principle as
+    automation_engine's create_automation-by-name reuse and mark_task_done
+    below. Shared by every team-management tool that takes a member_name so
+    this behavior can never drift between them."""
+    member_name = (member_name or "").strip()
+    if not member_name:
+        return None, "Give a team member's name."
+    candidates = (
+        db.query(TeamMember)
+        .filter(TeamMember.user_id == user_id, TeamMember.status == "active")
+        .filter(func.lower(TeamMember.name).contains(member_name.lower()))
+        .all()
+    )
+    if not candidates:
+        return None, f"No team member matching \"{member_name}\" found. Add them first with add_team_member."
+    if len(candidates) > 1:
+        names = ", ".join(c.name for c in candidates)
+        return None, f"More than one team member matches \"{member_name}\": {names}. Be more specific."
+    return candidates[0], None
+
+
+def _make_add_team_member_action(db: Session, user_id: int):
+    """Builds the callable for add_team_member. Reuses-in-place rather than
+    duplicating: adding a name that's already on the active roster is
+    reported back plainly instead of creating a second row for the same
+    person, the same forgiving-reuse choice create_automation already makes
+    for a repeated automation name."""
+    def _action(name, role=None, phone=None, attendance_employee_id=None):
+        name = (name or "").strip()
+        if not name:
+            return "Give the team member a name before adding them."
+        existing = (
+            db.query(TeamMember)
+            .filter(TeamMember.user_id == user_id, TeamMember.status == "active")
+            .filter(func.lower(TeamMember.name) == name.lower())
+            .first()
+        )
+        if existing is not None:
+            return f"{existing.name} is already on the team roster."
+        member = TeamMember(
+            user_id=user_id,
+            name=name,
+            role=(role or None),
+            phone=(phone or None),
+            attendance_employee_id=(attendance_employee_id or None),
+        )
+        db.add(member)
+        db.commit()
+        role_note = f" as {role}" if role else ""
+        return f"Added {name} to the team{role_note}."
+
+    return _action
+
+
+def _make_assign_task_action(db: Session, user_id: int):
+    """Builds the callable for assign_task. due_date, if given, must already
+    be a real resolved date/time by the time it reaches here - the model is
+    told (ai_provider.py's system prompt) to resolve anything relative
+    ("tomorrow") using the real current time it's given every call, never
+    left for this function to guess; a value that still doesn't parse is
+    reported back plainly rather than silently dropped."""
+    def _action(member_name, title, description=None, due_date=None):
+        member, error = _find_team_member(db, user_id, member_name)
+        if error:
+            return error
+        title = (title or "").strip()
+        if not title:
+            return "Give the task a title before assigning it."
+        due_dt = None
+        if due_date:
+            try:
+                due_dt = datetime.datetime.fromisoformat(str(due_date).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                return f"Couldn't understand the due date \"{due_date}\" - use a real date/time."
+        task = TeamTask(
+            user_id=user_id,
+            team_member_id=member.id,
+            title=title,
+            description=(description or None),
+            due_date=due_dt,
+        )
+        db.add(task)
+        db.commit()
+        due_note = f", due {due_dt.strftime('%b %d, %Y')}" if due_dt else ""
+        return f"Assigned \"{title}\" to {member.name}{due_note}."
+
+    return _action
+
+
+def _make_list_team_tasks_query(db: Session, user_id: int):
+    """Builds the callable for list_team_tasks. "overdue" is computed for
+    real here from each task's own due_date against the real current time -
+    never left for the model to judge from a raw dump, the same "never
+    trust the AI's own date/time reasoning" principle as automation_engine's
+    scheduling math."""
+    def _query(member_name=None, status=None):
+        q = db.query(TeamTask).filter(TeamTask.user_id == user_id)
+        member = None
+        if member_name:
+            member, error = _find_team_member(db, user_id, member_name)
+            if error:
+                return error
+            q = q.filter(TeamTask.team_member_id == member.id)
+        status_norm = (status or "open").strip().lower()
+        now = datetime.datetime.now(datetime.timezone.utc)
+        tasks = q.order_by(TeamTask.created_at.desc()).all()
+        rows = []
+        for t in tasks:
+            is_overdue = t.status == "open" and t.due_date is not None and _aware_utc(t.due_date) < now
+            if status_norm == "open" and t.status != "open":
+                continue
+            if status_norm == "done" and t.status != "done":
+                continue
+            if status_norm == "overdue" and not is_overdue:
+                continue
+            due_note = f" (due {t.due_date.strftime('%b %d')})" if t.due_date else ""
+            flag = " [OVERDUE]" if is_overdue else ""
+            member_name_for_row = t.team_member.name if t.team_member is not None else "(unknown)"
+            rows.append(f"- {member_name_for_row}: {t.title}{due_note}{flag} [{t.status}]")
+        if not rows:
+            scope = f" for {member.name}" if member else ""
+            return f"No {status_norm} tasks{scope}."
+        return "\n".join(rows)
+
+    return _query
+
+
+def _make_mark_task_done_action(db: Session, user_id: int):
+    """Builds the callable for mark_task_done. Matches title_or_id as a
+    case-insensitive substring against that member's own OPEN tasks only -
+    an ambiguous match (more than one open task contains the given text) is
+    reported back instead of guessing which one Sudeep meant."""
+    def _action(member_name, title_or_id):
+        member, error = _find_team_member(db, user_id, member_name)
+        if error:
+            return error
+        needle = (title_or_id or "").strip().lower()
+        if not needle:
+            return "Give enough of the task's title to identify it."
+        matches = (
+            db.query(TeamTask)
+            .filter(
+                TeamTask.user_id == user_id,
+                TeamTask.team_member_id == member.id,
+                TeamTask.status == "open",
+            )
+            .filter(func.lower(TeamTask.title).contains(needle))
+            .all()
+        )
+        if not matches:
+            return f"No open task matching \"{title_or_id}\" found for {member.name}."
+        if len(matches) > 1:
+            titles = "; ".join(t.title for t in matches)
+            return f"More than one open task for {member.name} matches \"{title_or_id}\": {titles}. Be more specific."
+        task = matches[0]
+        task.status = "done"
+        task.completed_at = datetime.datetime.now(datetime.timezone.utc)
+        db.commit()
+        return f"Marked \"{task.title}\" done for {member.name}."
+
+    return _action
+
+
+def _make_team_workload_report_query(db: Session, user_id: int):
+    """Builds the callable for team_workload_report - the one tool that
+    covers both "who's overloaded" (deterministic open/overdue task counts
+    per member, computed here in Python, never left for the model to count)
+    and "today's team report" (real attendance for the day, read from the
+    separate SS Retail Attendance app's Firebase project via
+    firebase_attendance_client.py, when Sudeep has linked a member's
+    attendance_employee_id and the feature is actually configured). Never
+    silently reports "nobody checked in" when attendance genuinely isn't
+    connected or the read failed - those two cases are always named
+    explicitly in the header, the same "never invent a business fact when
+    the real source isn't reachable" principle as every other read
+    integration in this project."""
+    def _query():
+        members = (
+            db.query(TeamMember)
+            .filter(TeamMember.user_id == user_id, TeamMember.status == "active")
+            .order_by(TeamMember.name)
+            .all()
+        )
+        if not members:
+            return "No team members on the roster yet - add one with add_team_member."
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        attendance_configured = firebase_attendance_client.firebase_attendance_configured()
+        attendance_today = None
+        if attendance_configured:
+            from zoneinfo import ZoneInfo
+
+            try:
+                tz = ZoneInfo(settings.firebase_attendance_timezone)
+            except Exception:
+                tz = datetime.timezone.utc
+            today_local = datetime.datetime.now(tz).date()
+            attendance_today = firebase_attendance_client.get_attendance_for_date(
+                today_local, settings.firebase_attendance_timezone
+            )
+
+        lines = []
+        for m in members:
+            open_tasks = (
+                db.query(TeamTask)
+                .filter(
+                    TeamTask.user_id == user_id,
+                    TeamTask.team_member_id == m.id,
+                    TeamTask.status == "open",
+                )
+                .all()
+            )
+            open_count = len(open_tasks)
+            overdue_count = sum(1 for t in open_tasks if t.due_date is not None and _aware_utc(t.due_date) < now)
+
+            line = f"- {m.name}"
+            if m.role:
+                line += f" ({m.role})"
+            line += f": {open_count} open task{'s' if open_count != 1 else ''}"
+            if overdue_count:
+                line += f", {overdue_count} overdue"
+
+            if attendance_today is not None and m.attendance_employee_id:
+                record = attendance_today.get(m.attendance_employee_id)
+                if record is None:
+                    line += " - not checked in today"
+                elif record.get("logged_out"):
+                    hours = record.get("total_hours")
+                    hours_note = f", {hours:.1f}h" if isinstance(hours, (int, float)) else ""
+                    line += f" - worked {record.get('login_time_local')} to {record.get('logout_time_local')}{hours_note}"
+                else:
+                    line += f" - checked in at {record.get('login_time_local')}, still on shift"
+
+            lines.append(line)
+
+        header = "Today's team report:\n"
+        if not attendance_configured:
+            header += "(Attendance isn't connected yet - only task workload is shown below.)\n"
+        elif attendance_today is None:
+            header += "(Couldn't reach the attendance system just now - only task workload is shown below.)\n"
+
+        return header + "\n".join(lines)
+
+    return _query
+
+
 _CALENDAR_DRAFT_MARKER = "[CALENDAR_EVENT_DRAFT]"
 
 
@@ -1015,6 +1297,7 @@ def build_reply_context(
     allow_tally: bool = True,
     allow_automation_management: bool = True,
     allow_email_calendar: bool = True,
+    allow_team_management: bool = True,
 ) -> dict:
     """Builds every optional generate_reply() kwarg (memory/skill/tally/
     agent-persona context, and every client-side tool callable) for a given
@@ -1047,6 +1330,12 @@ def build_reply_context(
     regardless of the agent's own allow_email_calendar setting - only ever
     MORE restrictive than the interactive endpoint's own per-agent setting,
     never less.
+
+    allow_team_management=False (Phase 23 "Team management", also used by
+    automation_engine, same reasoning again) forces every team-management
+    tool off regardless of the agent's own allow_team_management setting -
+    an unattended automation run can no more add a team member or assign a
+    task on its own than it can send an email or touch Tally.
 
     Returns {"kwargs": {...ready to **-splat into generate_reply()...},
     "consulted_names": [...mutated as a side effect by the consult_agent_
@@ -1271,6 +1560,28 @@ def build_reply_context(
             find_open_slots_query = _make_find_open_slots_query(db, user_id)
             create_calendar_event_confirmed_query = _make_create_calendar_event_confirmed_query(db, user_id)
 
+    # Phase 23 "Team management" (added 2026-09-26): gated per-agent exactly
+    # like Tally/email-calendar above (agent_allows_team_management mirrors
+    # agent_allows_email_calendar's own reasoning) - but unlike those two,
+    # there's no external account to check for a connection first (these
+    # tools write to JARVIS's own tables, which always exist), so the only
+    # gate is the feature flag plus this call actually being allowed to use
+    # it.
+    agent_allows_team_management = (
+        agent.allow_team_management if agent is not None else True
+    ) and allow_team_management
+    add_team_member_action = None
+    assign_task_action = None
+    list_team_tasks_query = None
+    mark_task_done_action = None
+    team_workload_report_query = None
+    if settings.team_management_enabled and agent_allows_team_management:
+        add_team_member_action = _make_add_team_member_action(db, user_id)
+        assign_task_action = _make_assign_task_action(db, user_id)
+        list_team_tasks_query = _make_list_team_tasks_query(db, user_id)
+        mark_task_done_action = _make_mark_task_done_action(db, user_id)
+        team_workload_report_query = _make_team_workload_report_query(db, user_id)
+
     return {
         "kwargs": {
             "memory_context": memory_context,
@@ -1297,6 +1608,11 @@ def build_reply_context(
             "list_calendar_events_query": list_calendar_events_query,
             "find_open_slots_query": find_open_slots_query,
             "create_calendar_event_confirmed_query": create_calendar_event_confirmed_query,
+            "add_team_member_action": add_team_member_action,
+            "assign_task_action": assign_task_action,
+            "list_team_tasks_query": list_team_tasks_query,
+            "mark_task_done_action": mark_task_done_action,
+            "team_workload_report_query": team_workload_report_query,
         },
         "consulted_names": consulted_names,
         "agent_allows_tally": agent_allows_tally,

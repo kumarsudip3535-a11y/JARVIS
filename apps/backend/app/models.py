@@ -165,6 +165,14 @@ class Agent(Base):
     # idempotent startup migration, same technique already used for
     # assigned_custom_tool_ids.
     allow_email_calendar = Column(Boolean, nullable=False, default=False)
+    # Phase 23 "Team management" (added 2026-09-26) - same gating pattern
+    # again: plain chat gets team-management tools by default
+    # (build_reply_context's allow_team_management param), but an agent
+    # must explicitly opt in, since not every persona should see/manage
+    # Sudeep's real team roster, tasks, or attendance data. Added via
+    # main.py's idempotent startup migration, same technique as
+    # allow_email_calendar/assigned_custom_tool_ids above.
+    allow_team_management = Column(Boolean, nullable=False, default=False)
     # JSON-encoded list of Skill.id (text column, not a join table, to match
     # this project's existing "no Alembic, keep it simple" style) - only
     # skills that are status="active" are ever actually recalled, same rule
@@ -385,3 +393,60 @@ class RemindedCalendarEvent(Base):
     reminded_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User")
+
+
+class TeamMember(Base):
+    """Phase 23 "Team management" (added 2026-09-26, scoped with Sudeep via
+    3 AskUserQuestion questions - see progress-tracker.md). Sudeep's own
+    v1 choice: a chat-based team tracker (add a member, assign a task, ask
+    "who's overloaded"/"today's team report") for SS Retail Services only,
+    with real attendance data pulled in from the separate SS Retail
+    Attendance app (a standalone React/Firebase app, NOT part of this
+    codebase - see firebase_attendance_client.py) rather than JARVIS
+    tracking its own attendance.
+
+    This table is deliberately JARVIS's own lightweight roster, not a
+    mirror of that other app's real `employees` Firestore collection -
+    attendance_employee_id is an OPTIONAL free-text link Sudeep can set
+    (matching either that collection's document id or its own
+    `employeeId` field) so team_workload_report() can cross-reference a
+    team member with their real attendance for the day when it's set, but
+    a team member with no link still works fine for tasks alone - Sudeep
+    doesn't have to keep both systems' rosters in lockstep to use either
+    feature."""
+    __tablename__ = "team_members"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    role = Column(String, nullable=True)  # Sudeep's own free-text role/title, e.g. "Electrician"
+    phone = Column(String, nullable=True)
+    attendance_employee_id = Column(String, nullable=True)  # optional link, see docstring above
+    status = Column(String, nullable=False, default="active")  # active | inactive
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User")
+
+
+class TeamTask(Base):
+    """Phase 23 "Team management" (added 2026-09-26) - a task assigned to a
+    TeamMember, tracked entirely inside JARVIS (there is no external task
+    system this integrates with in v1). due_date is optional - a task with
+    no due date is never counted as overdue by team_workload_report()'s
+    deterministic Python logic (never left for the model to judge, same
+    "never trust the AI's own date/time reasoning" principle already
+    applied to automation scheduling in Phase 18)."""
+    __tablename__ = "team_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    team_member_id = Column(Integer, ForeignKey("team_members.id"), nullable=False, index=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    due_date = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String, nullable=False, default="open")  # open | done | cancelled
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User")
+    team_member = relationship("TeamMember")

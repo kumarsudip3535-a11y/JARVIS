@@ -88,6 +88,27 @@ def _ensure_phone_call_appointment_columns():
                 conn.execute(text(f"ALTER TABLE phone_call_records ADD COLUMN {name} {sql_type}"))
 
 
+def _ensure_agent_allow_team_management_column():
+    """Same idempotent pattern as _ensure_agent_allow_email_calendar_column
+    above, for Phase 23's new Agent.allow_team_management column (added
+    2026-09-26 - see models.py). Uses the Postgres-safe "DEFAULT FALSE"
+    literal from the start (not "DEFAULT 0") - that exact mismatch was a
+    real bug found and fixed in Phase 19's own version of this migration
+    (see progress-tracker.md), so it's never repeated here. Base.metadata.
+    create_all above already creates the new team_members/team_tasks
+    tables themselves (brand-new tables, not altered ones), so only this
+    one column on the existing "agents" table needs the manual ALTER
+    TABLE."""
+    inspector = inspect(engine)
+    if "agents" not in inspector.get_table_names():
+        return
+    existing_columns = {c["name"] for c in inspector.get_columns("agents")}
+    if "allow_team_management" in existing_columns:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE agents ADD COLUMN allow_team_management BOOLEAN DEFAULT FALSE"))
+
+
 def _ensure_conversation_agent_id_column():
     """Lightweight, idempotent startup migration (this project deliberately
     has no Alembic - see progress-tracker.md). Base.metadata.create_all above
@@ -112,6 +133,7 @@ _ensure_agent_custom_tool_ids_column()
 _ensure_agent_allow_email_calendar_column()
 _ensure_conversation_phone_call_sid_column()
 _ensure_phone_call_appointment_columns()
+_ensure_agent_allow_team_management_column()
 
 app = FastAPI(title="JARVIS Backend")
 

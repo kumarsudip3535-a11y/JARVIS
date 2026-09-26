@@ -171,6 +171,10 @@ class AgentCreate(BaseModel):
     # should be able to read Sudeep's inbox or touch his calendar, same
     # opt-in reasoning as allow_tally_billing.
     allow_email_calendar: bool = False
+    # Phase 23 "Team management": off by default, same reasoning again -
+    # not every agent persona should see/manage Sudeep's real team roster,
+    # tasks, or attendance data.
+    allow_team_management: bool = False
     assigned_skill_ids: list[int] = []
     # Phase 16 "Tool/plugin architecture": which of Sudeep's own CustomTool
     # rows this agent can use - same "empty means none, not all" rule as
@@ -184,6 +188,7 @@ class AgentUpdate(BaseModel):
     allow_web_search: bool | None = None
     allow_tally_billing: bool | None = None
     allow_email_calendar: bool | None = None
+    allow_team_management: bool | None = None
     assigned_skill_ids: list[int] | None = None
     assigned_custom_tool_ids: list[int] | None = None
 
@@ -195,6 +200,7 @@ class AgentOut(BaseModel):
     allow_web_search: bool
     allow_tally_billing: bool
     allow_email_calendar: bool
+    allow_team_management: bool
     assigned_skill_ids: list[int]
     assigned_custom_tool_ids: list[int]
     status: str

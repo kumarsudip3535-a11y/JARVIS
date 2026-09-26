@@ -475,6 +475,118 @@ CREATE_CALENDAR_EVENT_CONFIRMED_TOOL = {
     },
 }
 
+# ============================================================================
+# Phase 23 "Team management" (added 2026-09-26, scoped with Sudeep via 3
+# AskUserQuestion questions - see progress-tracker.md). His own v1 choice:
+# a chat-based team tracker ("assign this to Rahul", "who's overloaded",
+# "today's team report") for SS Retail Services only, with real attendance
+# pulled in from the separate SS Retail Attendance app's Firebase project
+# (see firebase_attendance_client.py) rather than JARVIS keeping its own
+# attendance records. These 5 tools are all writes/reads against JARVIS's
+# OWN TeamMember/TeamTask tables (never the attendance app's own data,
+# which is read-only), so - unlike Tally/calendar - they are all called
+# live with no review card, the same "internal record change, not an
+# external-system side effect" tier as the existing automation-management
+# tools (create_automation/list_automations/cancel_automation).
+# ============================================================================
+
+ADD_TEAM_MEMBER_TOOL = {
+    "name": "add_team_member",
+    "description": (
+        "Add a new person to Sudeep's team roster inside JARVIS, so tasks can be assigned to them "
+        "and (if he links their attendance_employee_id) their real attendance shows up in "
+        "team_workload_report. Only call this when Sudeep is actually asking to add/register someone "
+        "new, not just mentioning a name in passing."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "The team member's name"},
+            "role": {"type": "string", "description": "Their role/title, e.g. \"Electrician\", \"Supervisor\" - optional"},
+            "phone": {"type": "string", "description": "Optional phone number"},
+            "attendance_employee_id": {
+                "type": "string",
+                "description": (
+                    "Optional - only if Sudeep gives you the matching employeeId from the separate "
+                    "SS Retail Attendance app, to link this person's real attendance into future reports. "
+                    "Never guess this yourself."
+                ),
+            },
+        },
+        "required": ["name"],
+    },
+}
+
+ASSIGN_TASK_TOOL = {
+    "name": "assign_task",
+    "description": (
+        "Assign a task to an existing team member (\"assign this to Rahul\", \"tell Priya to follow up "
+        "on the Dhanbad site tomorrow\"). member_name is matched against the existing roster - if there's "
+        "no match or more than one plausible match, this tool tells you so instead of guessing which "
+        "person was meant; ask Sudeep to clarify or add them first with add_team_member. Resolve any "
+        "relative due date (\"tomorrow\", \"by Friday\") using the real current date/time given to you "
+        "below, never a guess."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "member_name": {"type": "string", "description": "Which team member to assign this to"},
+            "title": {"type": "string", "description": "Short task title"},
+            "description": {"type": "string", "description": "Optional extra detail"},
+            "due_date": {"type": "string", "description": "Optional due date/time, RFC3339 with an explicit UTC offset"},
+        },
+        "required": ["member_name", "title"],
+    },
+}
+
+LIST_TEAM_TASKS_TOOL = {
+    "name": "list_team_tasks",
+    "description": (
+        "List tasks - optionally filtered to one team member and/or a status (\"open\", \"done\", "
+        "\"overdue\", or omit both for everything open). Use this for \"what's on Rahul's plate\", "
+        "\"what's overdue\", \"what tasks are open\". Overdue is computed for real from each task's own "
+        "due_date, never guessed."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "member_name": {"type": "string", "description": "Optional - filter to one team member"},
+            "status": {"type": "string", "description": "Optional - \"open\", \"done\", \"overdue\", or \"all\""},
+        },
+        "required": [],
+    },
+}
+
+MARK_TASK_DONE_TOOL = {
+    "name": "mark_task_done",
+    "description": (
+        "Mark a team member's task as done, once Sudeep says it's finished. member_name plus enough of "
+        "the task's title to identify it uniquely - if more than one open task matches, this tool says so "
+        "instead of guessing which one was meant."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "member_name": {"type": "string", "description": "Which team member's task this is"},
+            "title_or_id": {"type": "string", "description": "The task's title (or enough of it to identify it)"},
+        },
+        "required": ["member_name", "title_or_id"],
+    },
+}
+
+TEAM_WORKLOAD_REPORT_TOOL = {
+    "name": "team_workload_report",
+    "description": (
+        "The single tool for \"who's overloaded\", \"today's team report\", or any general question "
+        "about how the team is doing right now. Takes no arguments - it deterministically computes open/"
+        "overdue task counts per team member (never left for you to count from a raw list) and, if "
+        "Sudeep has connected the separate SS Retail Attendance app, today's real check-in/check-out "
+        "status per member too. If attendance isn't connected, the result says so plainly - never treat "
+        "that as \"nobody's checked in today\", and never invent an attendance figure yourself."
+    ),
+    "input_schema": {"type": "object", "properties": {}, "required": []},
+}
+
 # Every client-side tool name JARVIS can ever describe/offer, derived
 # directly from each tool's own schema (never a hand-typed second list that
 # could silently drift out of sync) - added 2026-09-21 alongside the dispatch
@@ -499,6 +611,11 @@ _KNOWN_CLIENT_TOOL_NAMES = {
     LIST_CALENDAR_EVENTS_TOOL["name"],
     FIND_OPEN_SLOTS_TOOL["name"],
     CREATE_CALENDAR_EVENT_CONFIRMED_TOOL["name"],
+    ADD_TEAM_MEMBER_TOOL["name"],
+    ASSIGN_TASK_TOOL["name"],
+    LIST_TEAM_TASKS_TOOL["name"],
+    MARK_TASK_DONE_TOOL["name"],
+    TEAM_WORKLOAD_REPORT_TOOL["name"],
 }
 
 JARVIS_SYSTEM_PROMPT = (
@@ -717,6 +834,16 @@ JARVIS_SYSTEM_PROMPT = (
     "own explicit word, this turn. Anything still tentative, proposed, or only requested (including an "
     "incoming-call appointment request Sudeep hasn't personally confirmed) still goes through the normal "
     "[CALENDAR_EVENT_DRAFT] review-card flow above, not this tool.\n\n"
+    "Added 2026-09-26, per Sudeep's own explicit request (\"a team management agent... employees, tasks, "
+    "assignments, deadlines, workload, attendance\"): you have five team-management tools - "
+    "add_team_member, assign_task, list_team_tasks, mark_task_done, and team_workload_report. Use "
+    "team_workload_report for any \"who's overloaded\"/\"today's team report\"/general team-status "
+    "question - it's the one tool that covers both task workload and real attendance in one deterministic "
+    "answer, never something to reconstruct yourself from separate calls. Unlike Tally/calendar, these "
+    "tools write only to JARVIS's own internal team records, never an external system, so call them "
+    "live with no review card - but never invent a team member, task, or attendance fact that isn't "
+    "literally in what a tool returned; if a name doesn't match anyone on the roster, or attendance isn't "
+    "connected, say so plainly rather than guessing who was meant or how someone's day is going.\n\n"
     "CRITICAL, found from a real failure on 2026-09-21: if an automation's instruction asks for a Tally "
     "billing summary (or anything else needing a tool that isn't available to you right then - during an "
     "automation run, that includes Tally, and it never becomes available just because you consult another "
@@ -730,7 +857,10 @@ JARVIS_SYSTEM_PROMPT = (
     "access to a tool never means inventing what it would have said. Concretely: don't claim you "
     "'consulted' another agent unless you genuinely called consult_agent this turn (the reply will show a "
     "real (Consulted: ...) footer if you did), and never state a bill count, amount, or date as if it came "
-    "from Tally unless it's literally present in an actual tool result."
+    "from Tally unless it's literally present in an actual tool result. The identical rule applies to "
+    "team_workload_report and the other team-management tools above: never state a task count, workload "
+    "judgment, or attendance status unless it's literally present in what that tool actually returned "
+    "this turn."
 )
 
 # Kept separate from JARVIS_SYSTEM_PROMPT because it drives a completely different,
@@ -841,6 +971,11 @@ def _dispatch_client_tool(
     list_calendar_events_query: "Callable[[str, str], str] | None" = None,
     find_open_slots_query: "Callable[[str, str, int], str] | None" = None,
     create_calendar_event_confirmed_query: "Callable[[str, str, str, str | None, str | None], str] | None" = None,
+    add_team_member_action: "Callable[[str, str | None, str | None, str | None], str] | None" = None,
+    assign_task_action: "Callable[[str, str, str | None, str | None], str] | None" = None,
+    list_team_tasks_query: "Callable[[str | None, str | None], str] | None" = None,
+    mark_task_done_action: "Callable[[str, str], str] | None" = None,
+    team_workload_report_query: "Callable[[], str] | None" = None,
 ) -> str:
     """The single shared "which client-side tool, or none" decision used by
     every provider's own tool-use loop (Anthropic/Gemini/Groq) - given one
@@ -972,6 +1107,45 @@ def _dispatch_client_tool(
             )
         except Exception as e:
             return f"Couldn't create that calendar event: {e}"
+    elif name == "add_team_member" and add_team_member_action is not None:
+        try:
+            return add_team_member_action(
+                tool_input.get("name", ""),
+                tool_input.get("role"),
+                tool_input.get("phone"),
+                tool_input.get("attendance_employee_id"),
+            )
+        except Exception as e:
+            return f"Couldn't add that team member: {e}"
+    elif name == "assign_task" and assign_task_action is not None:
+        try:
+            return assign_task_action(
+                tool_input.get("member_name", ""),
+                tool_input.get("title", ""),
+                tool_input.get("description"),
+                tool_input.get("due_date"),
+            )
+        except Exception as e:
+            return f"Couldn't assign that task: {e}"
+    elif name == "list_team_tasks" and list_team_tasks_query is not None:
+        try:
+            return list_team_tasks_query(
+                tool_input.get("member_name"), tool_input.get("status")
+            )
+        except Exception as e:
+            return f"Couldn't list team tasks: {e}"
+    elif name == "mark_task_done" and mark_task_done_action is not None:
+        try:
+            return mark_task_done_action(
+                tool_input.get("member_name", ""), tool_input.get("title_or_id", "")
+            )
+        except Exception as e:
+            return f"Couldn't mark that task done: {e}"
+    elif name == "team_workload_report" and team_workload_report_query is not None:
+        try:
+            return team_workload_report_query()
+        except Exception as e:
+            return f"Couldn't build the team workload report: {e}"
     elif custom_tool_invoke is not None and name.startswith("custom_tool_"):
         try:
             return custom_tool_invoke(name, tool_input)
@@ -1009,6 +1183,11 @@ def _offered_tool_specs(
     list_calendar_events_query=None,
     find_open_slots_query=None,
     create_calendar_event_confirmed_query=None,
+    add_team_member_action=None,
+    assign_task_action=None,
+    list_team_tasks_query=None,
+    mark_task_done_action=None,
+    team_workload_report_query=None,
 ) -> list:
     """Builds the canonical, Anthropic-native-SHAPED list of client-side
     tool schemas to offer for this call, purely from which callables are
@@ -1058,6 +1237,16 @@ def _offered_tool_specs(
         tools.append(FIND_OPEN_SLOTS_TOOL)
     if create_calendar_event_confirmed_query is not None:
         tools.append(CREATE_CALENDAR_EVENT_CONFIRMED_TOOL)
+    if add_team_member_action is not None:
+        tools.append(ADD_TEAM_MEMBER_TOOL)
+    if assign_task_action is not None:
+        tools.append(ASSIGN_TASK_TOOL)
+    if list_team_tasks_query is not None:
+        tools.append(LIST_TEAM_TASKS_TOOL)
+    if mark_task_done_action is not None:
+        tools.append(MARK_TASK_DONE_TOOL)
+    if team_workload_report_query is not None:
+        tools.append(TEAM_WORKLOAD_REPORT_TOOL)
     return tools
 
 
@@ -1081,6 +1270,11 @@ def _any_client_tool_offered(
     list_calendar_events_query=None,
     find_open_slots_query=None,
     create_calendar_event_confirmed_query=None,
+    add_team_member_action=None,
+    assign_task_action=None,
+    list_team_tasks_query=None,
+    mark_task_done_action=None,
+    team_workload_report_query=None,
 ) -> bool:
     """True if this call offers at least one client-side tool that needs a
     tool-use loop (as opposed to Anthropic's server-side web_search, which
@@ -1103,6 +1297,11 @@ def _any_client_tool_offered(
         or list_calendar_events_query is not None
         or find_open_slots_query is not None
         or create_calendar_event_confirmed_query is not None
+        or add_team_member_action is not None
+        or assign_task_action is not None
+        or list_team_tasks_query is not None
+        or mark_task_done_action is not None
+        or team_workload_report_query is not None
     )
 
 
@@ -1276,6 +1475,11 @@ class AIProvider(ABC):
         list_calendar_events_query: "Callable[[str, str], str] | None" = None,
         find_open_slots_query: "Callable[[str, str, int], str] | None" = None,
         create_calendar_event_confirmed_query: "Callable[[str, str, str, str | None, str | None], str] | None" = None,
+        add_team_member_action: "Callable[[str, str | None, str | None, str | None], str] | None" = None,
+        assign_task_action: "Callable[[str, str, str | None, str | None], str] | None" = None,
+        list_team_tasks_query: "Callable[[str | None, str | None], str] | None" = None,
+        mark_task_done_action: "Callable[[str, str], str] | None" = None,
+        team_workload_report_query: "Callable[[], str] | None" = None,
     ) -> str:
         """messages is a list of {"role": "user"|"assistant", "content": str}.
         memory_context, if given, is a short block of remembered facts about
@@ -1472,6 +1676,11 @@ class AnthropicProvider(AIProvider):
         list_calendar_events_query: "Callable[[str, str], str] | None" = None,
         find_open_slots_query: "Callable[[str, str, int], str] | None" = None,
         create_calendar_event_confirmed_query: "Callable[[str, str, str, str | None, str | None], str] | None" = None,
+        add_team_member_action: "Callable[[str, str | None, str | None, str | None], str] | None" = None,
+        assign_task_action: "Callable[[str, str, str | None, str | None], str] | None" = None,
+        list_team_tasks_query: "Callable[[str | None, str | None], str] | None" = None,
+        mark_task_done_action: "Callable[[str, str], str] | None" = None,
+        team_workload_report_query: "Callable[[], str] | None" = None,
     ) -> str:
         # Real current-time grounding, added 2026-09-21 after a real failure:
         # asked to schedule a one-time automation "2 minutes from now", the
@@ -1523,6 +1732,11 @@ class AnthropicProvider(AIProvider):
             list_calendar_events_query=list_calendar_events_query,
             find_open_slots_query=find_open_slots_query,
             create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
+            add_team_member_action=add_team_member_action,
+            assign_task_action=assign_task_action,
+            list_team_tasks_query=list_team_tasks_query,
+            mark_task_done_action=mark_task_done_action,
+            team_workload_report_query=team_workload_report_query,
         ))
         tools = tools or None
 
@@ -1567,6 +1781,11 @@ class AnthropicProvider(AIProvider):
             list_calendar_events_query=list_calendar_events_query,
             find_open_slots_query=find_open_slots_query,
             create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
+            add_team_member_action=add_team_member_action,
+            assign_task_action=assign_task_action,
+            list_team_tasks_query=list_team_tasks_query,
+            mark_task_done_action=mark_task_done_action,
+            team_workload_report_query=team_workload_report_query,
         )
         while (
             any_client_tool
@@ -1608,6 +1827,11 @@ class AnthropicProvider(AIProvider):
                     list_calendar_events_query=list_calendar_events_query,
                     find_open_slots_query=find_open_slots_query,
                     create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
+                    add_team_member_action=add_team_member_action,
+                    assign_task_action=assign_task_action,
+                    list_team_tasks_query=list_team_tasks_query,
+                    mark_task_done_action=mark_task_done_action,
+                    team_workload_report_query=team_workload_report_query,
                 )
                 tool_results.append({
                     "type": "tool_result",
@@ -1957,6 +2181,11 @@ class GeminiProvider(AIProvider):
         list_calendar_events_query=None,
         find_open_slots_query=None,
         create_calendar_event_confirmed_query=None,
+        add_team_member_action=None,
+        assign_task_action=None,
+        list_team_tasks_query=None,
+        mark_task_done_action=None,
+        team_workload_report_query=None,
     ) -> str:
         system_prompt = _build_system_prompt(
             memory_context, skill_context, tally_context, agent_context,
@@ -1981,6 +2210,11 @@ class GeminiProvider(AIProvider):
             list_calendar_events_query=list_calendar_events_query,
             find_open_slots_query=find_open_slots_query,
             create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
+            add_team_member_action=add_team_member_action,
+            assign_task_action=assign_task_action,
+            list_team_tasks_query=list_team_tasks_query,
+            mark_task_done_action=mark_task_done_action,
+            team_workload_report_query=team_workload_report_query,
         )
 
         contents = _messages_to_gemini_contents(messages)
@@ -2015,6 +2249,11 @@ class GeminiProvider(AIProvider):
             list_calendar_events_query=list_calendar_events_query,
             find_open_slots_query=find_open_slots_query,
             create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
+            add_team_member_action=add_team_member_action,
+            assign_task_action=assign_task_action,
+            list_team_tasks_query=list_team_tasks_query,
+            mark_task_done_action=mark_task_done_action,
+            team_workload_report_query=team_workload_report_query,
         )
 
         # Same 5-round cap and same shared dispatcher as AnthropicProvider's
@@ -2053,6 +2292,11 @@ class GeminiProvider(AIProvider):
                     list_calendar_events_query=list_calendar_events_query,
                     find_open_slots_query=find_open_slots_query,
                     create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
+                    add_team_member_action=add_team_member_action,
+                    assign_task_action=assign_task_action,
+                    list_team_tasks_query=list_team_tasks_query,
+                    mark_task_done_action=mark_task_done_action,
+                    team_workload_report_query=team_workload_report_query,
                 )
                 response_parts.append(
                     {"functionResponse": {"name": fc["name"], "response": {"result": result_text}}}
@@ -2238,6 +2482,11 @@ class GroqProvider(AIProvider):
         list_calendar_events_query=None,
         find_open_slots_query=None,
         create_calendar_event_confirmed_query=None,
+        add_team_member_action=None,
+        assign_task_action=None,
+        list_team_tasks_query=None,
+        mark_task_done_action=None,
+        team_workload_report_query=None,
     ) -> str:
         system_prompt = _build_system_prompt(
             memory_context, skill_context, tally_context, agent_context,
@@ -2262,6 +2511,11 @@ class GroqProvider(AIProvider):
             list_calendar_events_query=list_calendar_events_query,
             find_open_slots_query=find_open_slots_query,
             create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
+            add_team_member_action=add_team_member_action,
+            assign_task_action=assign_task_action,
+            list_team_tasks_query=list_team_tasks_query,
+            mark_task_done_action=mark_task_done_action,
+            team_workload_report_query=team_workload_report_query,
         )
         groq_tools = [_tool_schema_to_groq(t) for t in canonical_tools] or None
 
@@ -2293,6 +2547,11 @@ class GroqProvider(AIProvider):
             list_calendar_events_query=list_calendar_events_query,
             find_open_slots_query=find_open_slots_query,
             create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
+            add_team_member_action=add_team_member_action,
+            assign_task_action=assign_task_action,
+            list_team_tasks_query=list_team_tasks_query,
+            mark_task_done_action=mark_task_done_action,
+            team_workload_report_query=team_workload_report_query,
         )
 
         # Same shared dispatcher and 5-round cap as Anthropic/Gemini above -
@@ -2336,6 +2595,11 @@ class GroqProvider(AIProvider):
                     list_calendar_events_query=list_calendar_events_query,
                     find_open_slots_query=find_open_slots_query,
                     create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
+                    add_team_member_action=add_team_member_action,
+                    assign_task_action=assign_task_action,
+                    list_team_tasks_query=list_team_tasks_query,
+                    mark_task_done_action=mark_task_done_action,
+                    team_workload_report_query=team_workload_report_query,
                 )
                 chat_messages.append(
                     {"role": "tool", "tool_call_id": tc.get("id", ""), "content": result_text}

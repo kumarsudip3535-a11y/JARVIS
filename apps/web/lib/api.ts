@@ -288,6 +288,8 @@ export type AgentOut = {
   // Phase 19 "Email + Calendar" — off by default, same opt-in reasoning as
   // allow_tally_billing (see the backend's Agent model docstring).
   allow_email_calendar: boolean;
+  // Phase 23 "Team management" — off by default, same opt-in reasoning again.
+  allow_team_management: boolean;
   assigned_skill_ids: number[];
   assigned_custom_tool_ids: number[];
   status: "active" | "paused";
@@ -302,6 +304,7 @@ export type AgentCreateInput = {
   allow_web_search?: boolean;
   allow_tally_billing?: boolean;
   allow_email_calendar?: boolean;
+  allow_team_management?: boolean;
   assigned_skill_ids?: number[];
   assigned_custom_tool_ids?: number[];
 };

@@ -341,6 +341,33 @@ class Settings(BaseSettings):
         os.getenv("PHONE_AGENT_REPLY_TIMEOUT_SECONDS", "10")
     )
 
+    # --- Phase 23 "Team management" (added 2026-09-26) ---
+    # Sudeep's own v1 choice (3 AskUserQuestion questions, see
+    # progress-tracker.md): a chat-based team tracker, scoped to SS Retail
+    # Services, with real attendance pulled in from the separate SS Retail
+    # Attendance app's Firebase project rather than JARVIS tracking its own.
+    team_management_enabled: bool = os.getenv("TEAM_MANAGEMENT_ENABLED", "true").lower() == "true"
+    # Path to a Firebase service-account JSON key file for the SS Retail
+    # Attendance app's Firebase project - generated once by Sudeep in the
+    # Firebase console (Project Settings -> Service Accounts -> Generate
+    # new private key) for THAT project, never this one. Deliberately a
+    # file path, not the JSON pasted into .env directly - a multi-line JSON
+    # blob doesn't survive a single dotenv line cleanly, and this matches
+    # how Google's own client libraries expect a service-account credential
+    # to be supplied. Left empty, firebase_attendance_client.py reports
+    # itself as not configured and team_workload_report() plainly says
+    # attendance isn't connected, rather than guessing - same "never invent
+    # a business fact when the real source isn't reachable" principle as
+    # every other integration in this project.
+    firebase_attendance_credentials_path: str = os.getenv("FIREBASE_ATTENDANCE_CREDENTIALS_PATH", "")
+    # The SS Retail Attendance app stores attendance in India local time in
+    # spirit (all real employees are in India) but Firestore Timestamps are
+    # UTC on the wire - this is the timezone "today" is computed in when
+    # deciding which attendanceLogs rows count as "today's" for the report,
+    # same real-timezone-not-a-guess principle as phone_agent_timezone
+    # above and google_client.py's own get_calendar_timezone.
+    firebase_attendance_timezone: str = os.getenv("FIREBASE_ATTENDANCE_TIMEZONE", "Asia/Kolkata")
+
     class Config:
         env_file = ".env"
         # Fixed 2026-09-21: pydantic-settings' default for BaseSettings is

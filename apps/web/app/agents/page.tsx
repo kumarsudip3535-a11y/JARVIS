@@ -41,6 +41,7 @@ export default function AgentsPage() {
   const [allowWebSearch, setAllowWebSearch] = useState(true);
   const [allowTallyBilling, setAllowTallyBilling] = useState(false);
   const [allowEmailCalendar, setAllowEmailCalendar] = useState(false);
+  const [allowTeamManagement, setAllowTeamManagement] = useState(false);
   const [selectedSkillIds, setSelectedSkillIds] = useState<number[]>([]);
   const [selectedToolIds, setSelectedToolIds] = useState<number[]>([]);
   const [creating, setCreating] = useState(false);
@@ -78,6 +79,7 @@ export default function AgentsPage() {
     setAllowWebSearch(true);
     setAllowTallyBilling(false);
     setAllowEmailCalendar(false);
+    setAllowTeamManagement(false);
     setSelectedSkillIds([]);
     setSelectedToolIds([]);
   }
@@ -107,6 +109,7 @@ export default function AgentsPage() {
         allow_web_search: allowWebSearch,
         allow_tally_billing: allowTallyBilling,
         allow_email_calendar: allowEmailCalendar,
+        allow_team_management: allowTeamManagement,
         assigned_skill_ids: selectedSkillIds,
         assigned_custom_tool_ids: selectedToolIds,
       });
@@ -156,7 +159,7 @@ export default function AgentsPage() {
     }
   }
 
-  async function handleTogglePermission(agent: AgentOut, field: "allow_web_search" | "allow_tally_billing" | "allow_email_calendar") {
+  async function handleTogglePermission(agent: AgentOut, field: "allow_web_search" | "allow_tally_billing" | "allow_email_calendar" | "allow_team_management") {
     setBusyId(agent.id);
     try {
       await updateAgent(agent.id, { [field]: !agent[field] });
@@ -275,6 +278,14 @@ export default function AgentsPage() {
               />
               Can use email + calendar
             </label>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={allowTeamManagement}
+                onChange={(e) => setAllowTeamManagement(e.target.checked)}
+              />
+              Can manage the team
+            </label>
           </div>
 
           {activeSkills.length > 0 && (
@@ -382,6 +393,7 @@ export default function AgentsPage() {
               onToggleWebSearch={() => handleTogglePermission(a, "allow_web_search")}
               onToggleTallyBilling={() => handleTogglePermission(a, "allow_tally_billing")}
               onToggleEmailCalendar={() => handleTogglePermission(a, "allow_email_calendar")}
+              onToggleTeamManagement={() => handleTogglePermission(a, "allow_team_management")}
               onToggleTool={(toolId) => handleToggleAgentTool(a, toolId)}
             />
           ))}
@@ -402,6 +414,7 @@ function AgentCard({
   onToggleWebSearch,
   onToggleTallyBilling,
   onToggleEmailCalendar,
+  onToggleTeamManagement,
   onToggleTool,
 }: {
   agent: AgentOut;
@@ -414,6 +427,7 @@ function AgentCard({
   onToggleWebSearch: () => void;
   onToggleTallyBilling: () => void;
   onToggleEmailCalendar: () => void;
+  onToggleTeamManagement: () => void;
   onToggleTool: (toolId: number) => void;
 }) {
   const assignedSkillNames = agent.assigned_skill_ids
@@ -440,6 +454,8 @@ function AgentCard({
             {agent.allow_tally_billing ? "🧾 Tally billing on" : "🧾 Tally billing off"}
             {" · "}
             {agent.allow_email_calendar ? "📧 Email + calendar on" : "📧 Email + calendar off"}
+            {" · "}
+            {agent.allow_team_management ? "🧑‍🤝‍🧑 Team management on" : "🧑‍🤝‍🧑 Team management off"}
             {assignedSkillNames.length > 0 && <> · 🎓 {assignedSkillNames.join(", ")}</>}
             {assignedToolNames.length > 0 && <> · 🧰 {assignedToolNames.join(", ")}</>}
           </p>
@@ -508,6 +524,15 @@ function AgentCard({
             onChange={onToggleEmailCalendar}
           />
           Email + calendar
+        </label>
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={agent.allow_team_management}
+            disabled={busy}
+            onChange={onToggleTeamManagement}
+          />
+          Team management
         </label>
       </div>
       {tools.length > 0 && (

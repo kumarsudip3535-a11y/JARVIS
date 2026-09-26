@@ -214,7 +214,7 @@ def run_one(db: Session, automation: Automation) -> None:
     try:
         ctx = chat_routes.build_reply_context(
             db, automation.user_id, agent, allow_tally=False, allow_automation_management=False,
-            allow_email_calendar=False,
+            allow_email_calendar=False, allow_team_management=False,
         )
         provider = chat_routes.get_ai_provider()
         reply_text = provider.generate_reply(
