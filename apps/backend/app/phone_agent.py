@@ -340,18 +340,31 @@ def build_gather_twiml(
 ) -> str:
     """The TwiML for one conversational turn: speak prompt_text, then listen
     for the caller's next reply via Twilio's own built-in speech-to-text
-    (input="speech" - no separate STT provider/cost needed). If Twilio
-    hears nothing at all before gather_timeout, it falls through to the
-    trailing <Say>+<Hangup> in this SAME response and the call ends
-    gracefully - deliberately simpler than a special no-input branch in the
-    /gather endpoint itself (see phone_routes.py)."""
+    (input="speech" - no separate STT provider/cost needed).
+
+    Fixed 2026-09-26: the very first version hung up on a single silent
+    timeout, which turned out to be a real problem on a live outbound call
+    (background noise at a restaurant, or the callee just pausing a couple
+    of seconds before answering) - the call ended before the other person
+    had a real chance to speak. Now a first silent timeout falls through to
+    a SECOND <Gather> in this same response, with a short re-prompt asking
+    if they're still there, instead of hanging up immediately - still all
+    resolved in one TwiML document, no extra round trip to /gather needed.
+    Only a second consecutive silence (no speech across both listens) falls
+    through to the trailing <Say>+<Hangup> and ends the call gracefully."""
     say = _say_block(prompt_text, voice, language)
+    reprompt = _say_block("Sorry, I didn't catch that. Are you still there?", voice, language)
     goodbye = _say_block("Sorry, I didn't hear anything. Goodbye.", voice, language)
+    gather_open = (
+        f'<Gather input="speech" action="{_xml_escape(gather_action_url)}" '
+        f'method="POST" speechTimeout="auto" timeout="{gather_timeout}" '
+        f'language="{_xml_escape(language)}">'
+    )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        f'<Response><Gather input="speech" action="{_xml_escape(gather_action_url)}" '
-        f'method="POST" speechTimeout="auto" timeout="{gather_timeout}" '
-        f'language="{_xml_escape(language)}">{say}</Gather>{goodbye}<Hangup/></Response>'
+        f'<Response>{gather_open}{say}</Gather>'
+        f'{gather_open}{reprompt}</Gather>'
+        f'{goodbye}<Hangup/></Response>'
     )
 
 
