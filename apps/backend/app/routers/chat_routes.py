@@ -872,6 +872,39 @@ def _make_add_team_member_action(db: Session, user_id: int):
     return _action
 
 
+def _make_update_team_member_action(db: Session, user_id: int):
+    """Builds the callable for update_team_member. Only touches fields that
+    were actually passed (None means "leave as-is", never "clear this
+    field") - locates the target the same forgiving/ambiguity-safe way as
+    every other member_name-taking tool, via _find_team_member, so a typo
+    or an ambiguous partial name is reported back plainly instead of
+    silently updating (or failing to update) the wrong person. This exists
+    specifically so a bare correction like "Deepak's number is
+    7557740509" has a REAL tool behind it instead of the model fabricating
+    a success message with no backing write (see progress-tracker.md /
+    phase23-team-management.md for how that bug was found)."""
+    def _action(member_name, role=None, phone=None, attendance_employee_id=None):
+        member, error = _find_team_member(db, user_id, member_name)
+        if error:
+            return error
+        changes = []
+        if role:
+            member.role = role
+            changes.append(f"role to {role}")
+        if phone:
+            member.phone = phone
+            changes.append(f"phone number to {phone}")
+        if attendance_employee_id:
+            member.attendance_employee_id = attendance_employee_id
+            changes.append(f"attendance link to employee ID {attendance_employee_id}")
+        if not changes:
+            return f"Nothing to update for {member.name} - give a role, phone number, or attendance employee ID."
+        db.commit()
+        return f"Updated {member.name}'s " + " and ".join(changes) + "."
+
+    return _action
+
+
 def _make_assign_task_action(db: Session, user_id: int):
     """Builds the callable for assign_task. due_date, if given, must already
     be a real resolved date/time by the time it reaches here - the model is
@@ -1571,12 +1604,14 @@ def build_reply_context(
         agent.allow_team_management if agent is not None else True
     ) and allow_team_management
     add_team_member_action = None
+    update_team_member_action = None
     assign_task_action = None
     list_team_tasks_query = None
     mark_task_done_action = None
     team_workload_report_query = None
     if settings.team_management_enabled and agent_allows_team_management:
         add_team_member_action = _make_add_team_member_action(db, user_id)
+        update_team_member_action = _make_update_team_member_action(db, user_id)
         assign_task_action = _make_assign_task_action(db, user_id)
         list_team_tasks_query = _make_list_team_tasks_query(db, user_id)
         mark_task_done_action = _make_mark_task_done_action(db, user_id)
@@ -1609,6 +1644,7 @@ def build_reply_context(
             "find_open_slots_query": find_open_slots_query,
             "create_calendar_event_confirmed_query": create_calendar_event_confirmed_query,
             "add_team_member_action": add_team_member_action,
+            "update_team_member_action": update_team_member_action,
             "assign_task_action": assign_task_action,
             "list_team_tasks_query": list_team_tasks_query,
             "mark_task_done_action": mark_task_done_action,

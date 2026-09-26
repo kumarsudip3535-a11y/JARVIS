@@ -517,6 +517,36 @@ ADD_TEAM_MEMBER_TOOL = {
     },
 }
 
+UPDATE_TEAM_MEMBER_TOOL = {
+    "name": "update_team_member",
+    "description": (
+        "Update an EXISTING team member's role, phone number, or attendance_employee_id - only the "
+        "fields you pass are changed, everything else on their record stays as-is. Use this whenever "
+        "Sudeep gives you a new or corrected phone number, role, or attendance link for someone already "
+        "on the roster (even a bare statement like \"Deepak's number is 7557740509\" or \"Deepak's "
+        "employee ID is EMP003\" - that is a request to save it, not just a fact to note). Never claim "
+        "a contact detail was saved unless you actually call this tool and it confirms the update; if "
+        "the name doesn't match anyone (or matches more than one person), it will tell you plainly "
+        "instead of guessing."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "member_name": {"type": "string", "description": "The existing team member's name (or enough of it to identify them uniquely)"},
+            "role": {"type": "string", "description": "New role/title - optional, only if changing"},
+            "phone": {"type": "string", "description": "New phone number - optional, only if changing"},
+            "attendance_employee_id": {
+                "type": "string",
+                "description": (
+                    "New attendance link - only if Sudeep gives you the matching employeeId from the "
+                    "separate SS Retail Attendance app. Never guess this yourself."
+                ),
+            },
+        },
+        "required": ["member_name"],
+    },
+}
+
 ASSIGN_TASK_TOOL = {
     "name": "assign_task",
     "description": (
@@ -612,6 +642,7 @@ _KNOWN_CLIENT_TOOL_NAMES = {
     FIND_OPEN_SLOTS_TOOL["name"],
     CREATE_CALENDAR_EVENT_CONFIRMED_TOOL["name"],
     ADD_TEAM_MEMBER_TOOL["name"],
+    UPDATE_TEAM_MEMBER_TOOL["name"],
     ASSIGN_TASK_TOOL["name"],
     LIST_TEAM_TASKS_TOOL["name"],
     MARK_TASK_DONE_TOOL["name"],
@@ -835,8 +866,14 @@ JARVIS_SYSTEM_PROMPT = (
     "incoming-call appointment request Sudeep hasn't personally confirmed) still goes through the normal "
     "[CALENDAR_EVENT_DRAFT] review-card flow above, not this tool.\n\n"
     "Added 2026-09-26, per Sudeep's own explicit request (\"a team management agent... employees, tasks, "
-    "assignments, deadlines, workload, attendance\"): you have five team-management tools - "
-    "add_team_member, assign_task, list_team_tasks, mark_task_done, and team_workload_report. Use "
+    "assignments, deadlines, workload, attendance\"): you have six team-management tools - "
+    "add_team_member, update_team_member, assign_task, list_team_tasks, mark_task_done, and "
+    "team_workload_report. Use update_team_member (never add_team_member again) whenever Sudeep gives "
+    "you a new or corrected phone number, role, or attendance link for someone ALREADY on the roster - "
+    "including a bare statement like \"Deepak's number is 7557740509\", which is a request to save it, "
+    "not just a fact to note in passing; never reply as if you saved a contact detail unless you "
+    "actually called update_team_member (or add_team_member, when adding someone new) and it confirmed "
+    "the change. Use "
     "team_workload_report for any \"who's overloaded\"/\"today's team report\"/general team-status "
     "question - it's the one tool that covers both task workload and real attendance in one deterministic "
     "answer, never something to reconstruct yourself from separate calls. Unlike Tally/calendar, these "
@@ -972,6 +1009,7 @@ def _dispatch_client_tool(
     find_open_slots_query: "Callable[[str, str, int], str] | None" = None,
     create_calendar_event_confirmed_query: "Callable[[str, str, str, str | None, str | None], str] | None" = None,
     add_team_member_action: "Callable[[str, str | None, str | None, str | None], str] | None" = None,
+    update_team_member_action: "Callable[[str, str | None, str | None, str | None], str] | None" = None,
     assign_task_action: "Callable[[str, str, str | None, str | None], str] | None" = None,
     list_team_tasks_query: "Callable[[str | None, str | None], str] | None" = None,
     mark_task_done_action: "Callable[[str, str], str] | None" = None,
@@ -1117,6 +1155,16 @@ def _dispatch_client_tool(
             )
         except Exception as e:
             return f"Couldn't add that team member: {e}"
+    elif name == "update_team_member" and update_team_member_action is not None:
+        try:
+            return update_team_member_action(
+                tool_input.get("member_name", ""),
+                tool_input.get("role"),
+                tool_input.get("phone"),
+                tool_input.get("attendance_employee_id"),
+            )
+        except Exception as e:
+            return f"Couldn't update that team member: {e}"
     elif name == "assign_task" and assign_task_action is not None:
         try:
             return assign_task_action(
@@ -1184,6 +1232,7 @@ def _offered_tool_specs(
     find_open_slots_query=None,
     create_calendar_event_confirmed_query=None,
     add_team_member_action=None,
+    update_team_member_action=None,
     assign_task_action=None,
     list_team_tasks_query=None,
     mark_task_done_action=None,
@@ -1239,6 +1288,8 @@ def _offered_tool_specs(
         tools.append(CREATE_CALENDAR_EVENT_CONFIRMED_TOOL)
     if add_team_member_action is not None:
         tools.append(ADD_TEAM_MEMBER_TOOL)
+    if update_team_member_action is not None:
+        tools.append(UPDATE_TEAM_MEMBER_TOOL)
     if assign_task_action is not None:
         tools.append(ASSIGN_TASK_TOOL)
     if list_team_tasks_query is not None:
@@ -1271,6 +1322,7 @@ def _any_client_tool_offered(
     find_open_slots_query=None,
     create_calendar_event_confirmed_query=None,
     add_team_member_action=None,
+    update_team_member_action=None,
     assign_task_action=None,
     list_team_tasks_query=None,
     mark_task_done_action=None,
@@ -1298,6 +1350,7 @@ def _any_client_tool_offered(
         or find_open_slots_query is not None
         or create_calendar_event_confirmed_query is not None
         or add_team_member_action is not None
+        or update_team_member_action is not None
         or assign_task_action is not None
         or list_team_tasks_query is not None
         or mark_task_done_action is not None
@@ -1476,6 +1529,7 @@ class AIProvider(ABC):
         find_open_slots_query: "Callable[[str, str, int], str] | None" = None,
         create_calendar_event_confirmed_query: "Callable[[str, str, str, str | None, str | None], str] | None" = None,
         add_team_member_action: "Callable[[str, str | None, str | None, str | None], str] | None" = None,
+        update_team_member_action: "Callable[[str, str | None, str | None, str | None], str] | None" = None,
         assign_task_action: "Callable[[str, str, str | None, str | None], str] | None" = None,
         list_team_tasks_query: "Callable[[str | None, str | None], str] | None" = None,
         mark_task_done_action: "Callable[[str, str], str] | None" = None,
@@ -1677,6 +1731,7 @@ class AnthropicProvider(AIProvider):
         find_open_slots_query: "Callable[[str, str, int], str] | None" = None,
         create_calendar_event_confirmed_query: "Callable[[str, str, str, str | None, str | None], str] | None" = None,
         add_team_member_action: "Callable[[str, str | None, str | None, str | None], str] | None" = None,
+        update_team_member_action: "Callable[[str, str | None, str | None, str | None], str] | None" = None,
         assign_task_action: "Callable[[str, str, str | None, str | None], str] | None" = None,
         list_team_tasks_query: "Callable[[str | None, str | None], str] | None" = None,
         mark_task_done_action: "Callable[[str, str], str] | None" = None,
@@ -1733,6 +1788,7 @@ class AnthropicProvider(AIProvider):
             find_open_slots_query=find_open_slots_query,
             create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
             add_team_member_action=add_team_member_action,
+            update_team_member_action=update_team_member_action,
             assign_task_action=assign_task_action,
             list_team_tasks_query=list_team_tasks_query,
             mark_task_done_action=mark_task_done_action,
@@ -1782,6 +1838,7 @@ class AnthropicProvider(AIProvider):
             find_open_slots_query=find_open_slots_query,
             create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
             add_team_member_action=add_team_member_action,
+            update_team_member_action=update_team_member_action,
             assign_task_action=assign_task_action,
             list_team_tasks_query=list_team_tasks_query,
             mark_task_done_action=mark_task_done_action,
@@ -1828,6 +1885,7 @@ class AnthropicProvider(AIProvider):
                     find_open_slots_query=find_open_slots_query,
                     create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
                     add_team_member_action=add_team_member_action,
+                    update_team_member_action=update_team_member_action,
                     assign_task_action=assign_task_action,
                     list_team_tasks_query=list_team_tasks_query,
                     mark_task_done_action=mark_task_done_action,
@@ -2182,6 +2240,7 @@ class GeminiProvider(AIProvider):
         find_open_slots_query=None,
         create_calendar_event_confirmed_query=None,
         add_team_member_action=None,
+        update_team_member_action=None,
         assign_task_action=None,
         list_team_tasks_query=None,
         mark_task_done_action=None,
@@ -2211,6 +2270,7 @@ class GeminiProvider(AIProvider):
             find_open_slots_query=find_open_slots_query,
             create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
             add_team_member_action=add_team_member_action,
+            update_team_member_action=update_team_member_action,
             assign_task_action=assign_task_action,
             list_team_tasks_query=list_team_tasks_query,
             mark_task_done_action=mark_task_done_action,
@@ -2250,6 +2310,7 @@ class GeminiProvider(AIProvider):
             find_open_slots_query=find_open_slots_query,
             create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
             add_team_member_action=add_team_member_action,
+            update_team_member_action=update_team_member_action,
             assign_task_action=assign_task_action,
             list_team_tasks_query=list_team_tasks_query,
             mark_task_done_action=mark_task_done_action,
@@ -2293,6 +2354,7 @@ class GeminiProvider(AIProvider):
                     find_open_slots_query=find_open_slots_query,
                     create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
                     add_team_member_action=add_team_member_action,
+                    update_team_member_action=update_team_member_action,
                     assign_task_action=assign_task_action,
                     list_team_tasks_query=list_team_tasks_query,
                     mark_task_done_action=mark_task_done_action,
@@ -2483,6 +2545,7 @@ class GroqProvider(AIProvider):
         find_open_slots_query=None,
         create_calendar_event_confirmed_query=None,
         add_team_member_action=None,
+        update_team_member_action=None,
         assign_task_action=None,
         list_team_tasks_query=None,
         mark_task_done_action=None,
@@ -2512,6 +2575,7 @@ class GroqProvider(AIProvider):
             find_open_slots_query=find_open_slots_query,
             create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
             add_team_member_action=add_team_member_action,
+            update_team_member_action=update_team_member_action,
             assign_task_action=assign_task_action,
             list_team_tasks_query=list_team_tasks_query,
             mark_task_done_action=mark_task_done_action,
@@ -2548,6 +2612,7 @@ class GroqProvider(AIProvider):
             find_open_slots_query=find_open_slots_query,
             create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
             add_team_member_action=add_team_member_action,
+            update_team_member_action=update_team_member_action,
             assign_task_action=assign_task_action,
             list_team_tasks_query=list_team_tasks_query,
             mark_task_done_action=mark_task_done_action,
@@ -2596,6 +2661,7 @@ class GroqProvider(AIProvider):
                     find_open_slots_query=find_open_slots_query,
                     create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
                     add_team_member_action=add_team_member_action,
+                    update_team_member_action=update_team_member_action,
                     assign_task_action=assign_task_action,
                     list_team_tasks_query=list_team_tasks_query,
                     mark_task_done_action=mark_task_done_action,
