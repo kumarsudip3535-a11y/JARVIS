@@ -497,11 +497,23 @@ def create_calendar_event(
     from the chat tool-use loop. Raises GoogleAuthError on any failure
     (a malformed time, Calendar being unreachable, etc.) so the endpoint can
     report exactly why the event wasn't actually created, never silently
-    claiming success."""
+    claiming success.
+
+    Fixed 2026-09-26: a browser's <input type="datetime-local"> (used by the
+    calendar review card, including the newer incoming-appointment review
+    flow) never carries a UTC offset by design, so start_iso/end_iso reaching
+    here can be a bare "YYYY-MM-DDTHH:MM" string with no timezone info at
+    all. Google Calendar's API rejects a dateTime with no offset and no
+    separate timeZone field ("Missing time zone definition for start/end
+    time" - found live testing the appointment-booking review card). Rather
+    than trust every caller's start_iso/end_iso to already carry an offset,
+    this always attaches the calendar's own real timezone explicitly, at
+    this one chokepoint every caller goes through."""
+    event_timezone = get_calendar_timezone(access_token)
     body = {
         "summary": summary,
-        "start": {"dateTime": start_iso},
-        "end": {"dateTime": end_iso},
+        "start": {"dateTime": start_iso, "timeZone": event_timezone},
+        "end": {"dateTime": end_iso, "timeZone": event_timezone},
     }
     if description:
         body["description"] = description
