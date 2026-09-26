@@ -733,6 +733,55 @@ def _make_find_open_slots_query(db: Session, user_id: int):
     return _query
 
 
+def _make_create_calendar_event_confirmed_query(db: Session, user_id: int):
+    """Builds the callable passed to generate_reply() as
+    create_calendar_event_confirmed_query (added 2026-09-26, Sudeep's explicit
+    instruction: "for a confirmed booking, you should directly place that in
+    my calendar. No permission, no approval needed."). Unlike every other
+    calendar write in this project, this one is called LIVE with no review
+    card - the safety guarantee here isn't a human click, it's that the
+    system prompt (ai_provider.py) only ever lets the model reach for this
+    tool right after SUDEEP HIMSELF has just said, in his own words this
+    turn, that a specific booking is confirmed. Reuses google_client.
+    create_calendar_event exactly like the reviewed /calendar/create-event
+    endpoint (google_routes.py) does - same timezone handling, same error
+    reporting - just triggered from a tool call instead of a button click."""
+    def _query(
+        summary: str,
+        start_iso: str,
+        end_iso: str,
+        location: "str | None" = None,
+        description: "str | None" = None,
+    ) -> str:
+        account = _get_google_account(db, user_id)
+        if account is None:
+            return "Google isn't connected yet - Sudeep needs to connect it from Settings first."
+        summary = (summary or "").strip()
+        if not summary:
+            return "Give the event a title before creating it."
+        if not start_iso or not end_iso:
+            return "Give both a start and end time before creating it."
+        access_token = google_client.get_valid_access_token(account, db)
+        try:
+            result = google_client.create_calendar_event(
+                access_token,
+                summary,
+                start_iso,
+                end_iso,
+                description=(description or None),
+                location=(location or None),
+                use_default_reminder=True,
+            )
+        except google_client.GoogleAuthError as e:
+            return f"Couldn't create the event: {e}"
+        return (
+            f"Created \"{summary}\" directly on Sudeep's calendar - confirmed, no review "
+            f"needed (event id {result.get('event_id')})."
+        )
+
+    return _query
+
+
 _CALENDAR_DRAFT_MARKER = "[CALENDAR_EVENT_DRAFT]"
 
 
@@ -1211,6 +1260,7 @@ def build_reply_context(
     draft_email_reply_query = None
     list_calendar_events_query = None
     find_open_slots_query = None
+    create_calendar_event_confirmed_query = None
     if settings.email_calendar_enabled and agent_allows_email_calendar:
         google_account = _get_google_account(db, user_id)
         if google_account is not None:
@@ -1219,6 +1269,7 @@ def build_reply_context(
             draft_email_reply_query = _make_draft_email_reply_query(db, user_id)
             list_calendar_events_query = _make_list_calendar_events_query(db, user_id)
             find_open_slots_query = _make_find_open_slots_query(db, user_id)
+            create_calendar_event_confirmed_query = _make_create_calendar_event_confirmed_query(db, user_id)
 
     return {
         "kwargs": {
@@ -1245,6 +1296,7 @@ def build_reply_context(
             "draft_email_reply_query": draft_email_reply_query,
             "list_calendar_events_query": list_calendar_events_query,
             "find_open_slots_query": find_open_slots_query,
+            "create_calendar_event_confirmed_query": create_calendar_event_confirmed_query,
         },
         "consulted_names": consulted_names,
         "agent_allows_tally": agent_allows_tally,

@@ -444,6 +444,37 @@ FIND_OPEN_SLOTS_TOOL = {
     },
 }
 
+CREATE_CALENDAR_EVENT_CONFIRMED_TOOL = {
+    "name": "create_calendar_event_confirmed",
+    "description": (
+        "Immediately create a REAL Google Calendar event - no review card, no click, "
+        "no further approval. Added 2026-09-26 per Sudeep's explicit instruction: for "
+        "a genuinely CONFIRMED booking or appointment, it should go straight onto his "
+        "calendar with no permission step. Use this tool INSTEAD OF the "
+        "[CALENDAR_EVENT_DRAFT] marker ONLY when Sudeep has just told you, in his own "
+        "words in this conversation, that a specific booking/appointment is confirmed "
+        "and should be added directly - for example he says \"confirmed, put it "
+        "straight on my calendar\", or he's reviewing an incoming-call appointment "
+        "request and tells you it's real and to book it. Never call this from your own "
+        "judgment that something merely sounds confirmed, and never call it for "
+        "anything still tentative, proposed, or only requested (an incoming-call "
+        "appointment REQUEST that Sudeep hasn't personally confirmed yet still goes "
+        "through the normal [CALENDAR_EVENT_DRAFT] review-card flow). If in doubt, "
+        "use the draft flow, not this tool."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string", "description": "Event title"},
+            "start_iso": {"type": "string", "description": "Start time, RFC3339 with an explicit UTC offset, e.g. 2026-09-30T15:00:00+05:30"},
+            "end_iso": {"type": "string", "description": "End time, RFC3339 with an explicit UTC offset"},
+            "location": {"type": "string", "description": "Optional location"},
+            "description": {"type": "string", "description": "Optional event description/notes"},
+        },
+        "required": ["summary", "start_iso", "end_iso"],
+    },
+}
+
 # Every client-side tool name JARVIS can ever describe/offer, derived
 # directly from each tool's own schema (never a hand-typed second list that
 # could silently drift out of sync) - added 2026-09-21 alongside the dispatch
@@ -467,6 +498,7 @@ _KNOWN_CLIENT_TOOL_NAMES = {
     DRAFT_EMAIL_REPLY_TOOL["name"],
     LIST_CALENDAR_EVENTS_TOOL["name"],
     FIND_OPEN_SLOTS_TOOL["name"],
+    CREATE_CALENDAR_EVENT_CONFIRMED_TOOL["name"],
 }
 
 JARVIS_SYSTEM_PROMPT = (
@@ -675,6 +707,16 @@ JARVIS_SYSTEM_PROMPT = (
     "is ever actually added to his calendar until he explicitly confirms there. Only emit this block when "
     "you're genuinely confident you have the details right, and never emit it speculatively or as an "
     "example.\n\n"
+    "Added 2026-09-26, per Sudeep's own explicit instruction: when create_calendar_event_confirmed is "
+    "available and Sudeep has just told you, in his own words, that a specific booking or appointment is "
+    "CONFIRMED and should go straight onto his calendar with no approval step, call that tool directly "
+    "instead of emitting a [CALENDAR_EVENT_DRAFT] block - it writes the event immediately, no review card. "
+    "This covers both a call where the other party clearly confirmed something and Sudeep is now telling "
+    "you to book it, and Sudeep reviewing an incoming-call appointment request and deciding it's real. "
+    "Never use this tool on your own judgment that something merely sounds confirmed - only on Sudeep's "
+    "own explicit word, this turn. Anything still tentative, proposed, or only requested (including an "
+    "incoming-call appointment request Sudeep hasn't personally confirmed) still goes through the normal "
+    "[CALENDAR_EVENT_DRAFT] review-card flow above, not this tool.\n\n"
     "CRITICAL, found from a real failure on 2026-09-21: if an automation's instruction asks for a Tally "
     "billing summary (or anything else needing a tool that isn't available to you right then - during an "
     "automation run, that includes Tally, and it never becomes available just because you consult another "
@@ -798,6 +840,7 @@ def _dispatch_client_tool(
     draft_email_reply_query: "Callable[[str, str, str, str], str] | None" = None,
     list_calendar_events_query: "Callable[[str, str], str] | None" = None,
     find_open_slots_query: "Callable[[str, str, int], str] | None" = None,
+    create_calendar_event_confirmed_query: "Callable[[str, str, str, str | None, str | None], str] | None" = None,
 ) -> str:
     """The single shared "which client-side tool, or none" decision used by
     every provider's own tool-use loop (Anthropic/Gemini/Groq) - given one
@@ -918,6 +961,17 @@ def _dispatch_client_tool(
             )
         except Exception as e:
             return f"Couldn't find open slots: {e}"
+    elif name == "create_calendar_event_confirmed" and create_calendar_event_confirmed_query is not None:
+        try:
+            return create_calendar_event_confirmed_query(
+                tool_input.get("summary", ""),
+                tool_input.get("start_iso", ""),
+                tool_input.get("end_iso", ""),
+                tool_input.get("location"),
+                tool_input.get("description"),
+            )
+        except Exception as e:
+            return f"Couldn't create that calendar event: {e}"
     elif custom_tool_invoke is not None and name.startswith("custom_tool_"):
         try:
             return custom_tool_invoke(name, tool_input)
@@ -954,6 +1008,7 @@ def _offered_tool_specs(
     draft_email_reply_query=None,
     list_calendar_events_query=None,
     find_open_slots_query=None,
+    create_calendar_event_confirmed_query=None,
 ) -> list:
     """Builds the canonical, Anthropic-native-SHAPED list of client-side
     tool schemas to offer for this call, purely from which callables are
@@ -1001,6 +1056,8 @@ def _offered_tool_specs(
         tools.append(LIST_CALENDAR_EVENTS_TOOL)
     if find_open_slots_query is not None:
         tools.append(FIND_OPEN_SLOTS_TOOL)
+    if create_calendar_event_confirmed_query is not None:
+        tools.append(CREATE_CALENDAR_EVENT_CONFIRMED_TOOL)
     return tools
 
 
@@ -1023,6 +1080,7 @@ def _any_client_tool_offered(
     draft_email_reply_query=None,
     list_calendar_events_query=None,
     find_open_slots_query=None,
+    create_calendar_event_confirmed_query=None,
 ) -> bool:
     """True if this call offers at least one client-side tool that needs a
     tool-use loop (as opposed to Anthropic's server-side web_search, which
@@ -1044,6 +1102,7 @@ def _any_client_tool_offered(
         or draft_email_reply_query is not None
         or list_calendar_events_query is not None
         or find_open_slots_query is not None
+        or create_calendar_event_confirmed_query is not None
     )
 
 
@@ -1216,6 +1275,7 @@ class AIProvider(ABC):
         draft_email_reply_query: "Callable[[str, str, str, str | None], str] | None" = None,
         list_calendar_events_query: "Callable[[str, str], str] | None" = None,
         find_open_slots_query: "Callable[[str, str, int], str] | None" = None,
+        create_calendar_event_confirmed_query: "Callable[[str, str, str, str | None, str | None], str] | None" = None,
     ) -> str:
         """messages is a list of {"role": "user"|"assistant", "content": str}.
         memory_context, if given, is a short block of remembered facts about
@@ -1411,6 +1471,7 @@ class AnthropicProvider(AIProvider):
         draft_email_reply_query: "Callable[[str, str, str, str | None], str] | None" = None,
         list_calendar_events_query: "Callable[[str, str], str] | None" = None,
         find_open_slots_query: "Callable[[str, str, int], str] | None" = None,
+        create_calendar_event_confirmed_query: "Callable[[str, str, str, str | None, str | None], str] | None" = None,
     ) -> str:
         # Real current-time grounding, added 2026-09-21 after a real failure:
         # asked to schedule a one-time automation "2 minutes from now", the
@@ -1461,6 +1522,7 @@ class AnthropicProvider(AIProvider):
             draft_email_reply_query=draft_email_reply_query,
             list_calendar_events_query=list_calendar_events_query,
             find_open_slots_query=find_open_slots_query,
+            create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
         ))
         tools = tools or None
 
@@ -1504,6 +1566,7 @@ class AnthropicProvider(AIProvider):
             draft_email_reply_query=draft_email_reply_query,
             list_calendar_events_query=list_calendar_events_query,
             find_open_slots_query=find_open_slots_query,
+            create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
         )
         while (
             any_client_tool
@@ -1544,6 +1607,7 @@ class AnthropicProvider(AIProvider):
                     draft_email_reply_query=draft_email_reply_query,
                     list_calendar_events_query=list_calendar_events_query,
                     find_open_slots_query=find_open_slots_query,
+                    create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
                 )
                 tool_results.append({
                     "type": "tool_result",
@@ -1892,6 +1956,7 @@ class GeminiProvider(AIProvider):
         draft_email_reply_query=None,
         list_calendar_events_query=None,
         find_open_slots_query=None,
+        create_calendar_event_confirmed_query=None,
     ) -> str:
         system_prompt = _build_system_prompt(
             memory_context, skill_context, tally_context, agent_context,
@@ -1915,6 +1980,7 @@ class GeminiProvider(AIProvider):
             draft_email_reply_query=draft_email_reply_query,
             list_calendar_events_query=list_calendar_events_query,
             find_open_slots_query=find_open_slots_query,
+            create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
         )
 
         contents = _messages_to_gemini_contents(messages)
@@ -1948,6 +2014,7 @@ class GeminiProvider(AIProvider):
             draft_email_reply_query=draft_email_reply_query,
             list_calendar_events_query=list_calendar_events_query,
             find_open_slots_query=find_open_slots_query,
+            create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
         )
 
         # Same 5-round cap and same shared dispatcher as AnthropicProvider's
@@ -1985,6 +2052,7 @@ class GeminiProvider(AIProvider):
                     draft_email_reply_query=draft_email_reply_query,
                     list_calendar_events_query=list_calendar_events_query,
                     find_open_slots_query=find_open_slots_query,
+                    create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
                 )
                 response_parts.append(
                     {"functionResponse": {"name": fc["name"], "response": {"result": result_text}}}
@@ -2169,6 +2237,7 @@ class GroqProvider(AIProvider):
         draft_email_reply_query=None,
         list_calendar_events_query=None,
         find_open_slots_query=None,
+        create_calendar_event_confirmed_query=None,
     ) -> str:
         system_prompt = _build_system_prompt(
             memory_context, skill_context, tally_context, agent_context,
@@ -2192,6 +2261,7 @@ class GroqProvider(AIProvider):
             draft_email_reply_query=draft_email_reply_query,
             list_calendar_events_query=list_calendar_events_query,
             find_open_slots_query=find_open_slots_query,
+            create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
         )
         groq_tools = [_tool_schema_to_groq(t) for t in canonical_tools] or None
 
@@ -2222,6 +2292,7 @@ class GroqProvider(AIProvider):
             draft_email_reply_query=draft_email_reply_query,
             list_calendar_events_query=list_calendar_events_query,
             find_open_slots_query=find_open_slots_query,
+            create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
         )
 
         # Same shared dispatcher and 5-round cap as Anthropic/Gemini above -
@@ -2264,6 +2335,7 @@ class GroqProvider(AIProvider):
                     draft_email_reply_query=draft_email_reply_query,
                     list_calendar_events_query=list_calendar_events_query,
                     find_open_slots_query=find_open_slots_query,
+                    create_calendar_event_confirmed_query=create_calendar_event_confirmed_query,
                 )
                 chat_messages.append(
                     {"role": "tool", "tool_call_id": tc.get("id", ""), "content": result_text}

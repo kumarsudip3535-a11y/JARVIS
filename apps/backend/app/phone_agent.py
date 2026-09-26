@@ -54,6 +54,7 @@ _END_CALL_MARKER = "[END_CALL]"
 END_CALL_MARKER = _END_CALL_MARKER
 _CALLBACK_REQUEST_MARKER = "[CALLBACK_REQUEST]"
 _APPOINTMENT_REQUEST_MARKER = "[APPOINTMENT_REQUEST]"
+_BOOKING_CONFIRMED_MARKER = "[BOOKING_CONFIRMED]"
 
 
 def phone_timezone(timezone_name: str) -> datetime.tzinfo:
@@ -220,6 +221,54 @@ def extract_appointment_request_marker(reply_text: str) -> "tuple[str, dict | No
     return (text[:idx] + text[json_start + consumed:]).strip(), request
 
 
+def extract_booking_confirmed_marker(reply_text: str) -> "tuple[str, dict | None]":
+    """Parse a [BOOKING_CONFIRMED] marker from an outbound call's own reply
+    (see build_outbound_phone_persona_context - only emitted when the other
+    party unambiguously confirmed the exact approved request). Mirrors
+    extract_appointment_request_marker's own conservative parsing exactly:
+    malformed JSON, a missing summary, or a start_iso/end_iso that doesn't
+    parse as a real offset-aware timestamp all discard the marker rather
+    than guess - this one directly writes to a real calendar with no human
+    review, so it is held to the same "never guess" standard as every other
+    real write in this project, just stricter (silent discard, not even a
+    logged warning, since a caller-facing call must never be interrupted or
+    slowed down by this)."""
+    text = (reply_text or "").strip()
+    idx = text.find(_BOOKING_CONFIRMED_MARKER)
+    if idx == -1:
+        return text, None
+
+    json_start = idx + len(_BOOKING_CONFIRMED_MARKER)
+    while json_start < len(text) and text[json_start].isspace():
+        json_start += 1
+    try:
+        data, consumed = json.JSONDecoder().raw_decode(text[json_start:])
+    except (json.JSONDecodeError, TypeError):
+        return text[:idx].strip(), None
+    if not isinstance(data, dict):
+        return text[:idx].strip(), None
+
+    summary = str(data.get("summary") or "").strip()[:500]
+    start_iso = str(data.get("start_iso") or "").strip()
+    end_iso = str(data.get("end_iso") or "").strip()
+    try:
+        start_parsed = datetime.datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        end_parsed = datetime.datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return text[:idx].strip(), None
+    if not summary or start_parsed.tzinfo is None or end_parsed.tzinfo is None:
+        return text[:idx].strip(), None
+
+    booking = {
+        "summary": summary,
+        "start_iso": start_iso,
+        "end_iso": end_iso,
+        "location": str(data.get("location") or "").strip()[:300] or None,
+        "notes": str(data.get("notes") or "").strip()[:500] or None,
+    }
+    return (text[:idx] + text[json_start + consumed:]).strip(), booking
+
+
 def extract_callback_request_marker(reply_text: str) -> "tuple[str, dict | None]":
     """Remove and parse a structured callback marker from a phone reply.
 
@@ -293,11 +342,23 @@ def _say_block(text: str, voice: str, language: str) -> str:
     return f'<Say voice="{_xml_escape(voice)}" language="{_xml_escape(language)}">{_xml_escape(text)}</Say>'
 
 
-def build_outbound_phone_persona_context(business_name: str, purpose: str, extra_persona: str) -> str:
+def build_outbound_phone_persona_context(
+    business_name: str,
+    purpose: str,
+    extra_persona: str,
+    current_local_time: "str | None" = None,
+) -> str:
     """Prompt overlay for a JARVIS-initiated call, distinct from the
     incoming-call assistant. The approved purpose is included so the callee
     hears a relevant continuation rather than the generic incoming-call
-    question, and the assistant does not agree to changed terms."""
+    question, and the assistant does not agree to changed terms.
+
+    current_local_time added 2026-09-26 alongside the [BOOKING_CONFIRMED]
+    marker below - resolving a confirmed date/time into a real RFC3339
+    timestamp needs real grounding in the actual current date/time, the
+    same "never trust the AI's arithmetic on dates" principle already
+    applied to automation scheduling (see automation_engine.py) after a
+    real 2026-09-21 bug where a relative time landed ~13.5 hours off."""
     business = business_name or "SS Retail Services"
     lines = [
         f"You are Saanvi, an AI assistant calling on behalf of Sudip at {business}. "
@@ -325,6 +386,22 @@ def build_outbound_phone_persona_context(business_name: str, purpose: str, extra
         "Do not claim you have access to calendars, email, payment, or other "
         "business systems during this call. Do not invent names, details, or "
         "confirmation. End politely when the purpose is complete.",
+        f"Current local date/time for resolving relative dates: {current_local_time or 'unknown; ask for an exact date instead of guessing'}.",
+        "If, and only if, the other person clearly and unambiguously confirms this "
+        "exact approved request has been completed, with matching key details (same "
+        "date, time, and quantity/venue as approved - not a generic yes or a "
+        "different reservation), append this machine-readable marker at the very end "
+        "of your reply, after your spoken confirmation to them: "
+        '[BOOKING_CONFIRMED]{"summary":"...","start_iso":"YYYY-MM-DDTHH:MM:SS+05:30",'
+        '"end_iso":"YYYY-MM-DDTHH:MM:SS+05:30","location":"...","notes":"..."}. '
+        "Use a real RFC3339 timestamp with an explicit UTC offset (never a bare date/"
+        "time), valid JSON, and these exact keys (location/notes may be empty strings "
+        "if not applicable; if no end time was discussed, assume a sensible duration "
+        "for this kind of booking, such as one hour). This marker directly adds a "
+        "real event to Sudip's calendar with no further review by him, so only "
+        "include it when the confirmation is genuine and unambiguous - if there is "
+        "any doubt at all, do not include it, and say instead that you will need to "
+        "check with Sudip.",
     ]
     if extra_persona:
         lines.append("Additional phone instructions:\n" + extra_persona)

@@ -11,6 +11,7 @@ from app.database import Base, SessionLocal, engine
 from app.routers import auth_routes, chat_routes, memory_routes, knowledge_routes, skill_routes, tally_routes, code_routes, agent_routes, tool_routes, google_routes, phone_routes, outbound_phone_routes
 from app.debug_agent import log_backend_exception
 from app import automation_engine
+from app import reminder_engine
 
 Base.metadata.create_all(bind=engine)
 
@@ -207,3 +208,42 @@ async def _automation_background_loop() -> None:
 async def _start_automation_engine() -> None:
     await asyncio.to_thread(_run_due_automations_once)
     asyncio.create_task(_automation_background_loop())
+
+
+# Reminder feature (added 2026-09-26, Sudeep's explicit request - see
+# reminder_engine.py's own module docstring). Same "catch up on next open,
+# then keep checking periodically while running" shape as the automation
+# engine above, deliberately mirrored rather than sharing one loop, so a
+# slow/failing reminder pass can never delay or starve automations (or vice
+# versa) - each runs on its own independent asyncio task and interval.
+def _run_due_reminders_once() -> None:
+    """One pass of reminder_engine.check_and_send_due_reminders, using a
+    fresh DB session (same reasoning as _run_due_automations_once above -
+    this runs outside any request). Never raises - an unexpected failure
+    here is logged the same way a real request's unhandled exception is,
+    and must never crash startup or stop the loop from trying again next
+    tick."""
+    if not settings.reminder_engine_enabled:
+        return
+    db = SessionLocal()
+    try:
+        reminder_engine.check_and_send_due_reminders(db)
+    except Exception as e:
+        log_backend_exception("SCHEDULER", "/internal/reminder_check", e)
+    finally:
+        db.close()
+
+
+async def _reminder_background_loop() -> None:
+    while True:
+        await asyncio.sleep(max(settings.reminder_check_interval_seconds, 30))
+        # Worker thread - a due reminder's pass makes real Google Calendar
+        # and Twilio HTTP calls, which must never block the event loop the
+        # rest of the backend depends on.
+        await asyncio.to_thread(_run_due_reminders_once)
+
+
+@app.on_event("startup")
+async def _start_reminder_engine() -> None:
+    await asyncio.to_thread(_run_due_reminders_once)
+    asyncio.create_task(_reminder_background_loop())

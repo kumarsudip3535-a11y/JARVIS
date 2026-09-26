@@ -203,6 +203,16 @@ class Settings(BaseSettings):
     automation_engine_enabled: bool = os.getenv("AUTOMATION_ENGINE_ENABLED", "true").lower() == "true"
     automation_check_interval_seconds: int = int(os.getenv("AUTOMATION_CHECK_INTERVAL_SECONDS", "60"))
 
+    # Reminder feature (added 2026-09-26, Sudeep's explicit request - see
+    # reminder_engine.py's own module docstring for the full picture).
+    # Reuses the existing Twilio account (TWILIO_ACCOUNT_SID/TWILIO_AUTH_
+    # TOKEN/TWILIO_FROM_NUMBER above); the only new setting is where to
+    # actually send the reminder.
+    reminder_engine_enabled: bool = os.getenv("REMINDER_ENGINE_ENABLED", "true").lower() == "true"
+    reminder_check_interval_seconds: int = int(os.getenv("REMINDER_CHECK_INTERVAL_SECONDS", "300"))
+    reminder_lead_minutes: int = int(os.getenv("REMINDER_LEAD_MINUTES", "60"))
+    reminder_to_number: str = os.getenv("PHONE_AGENT_REMINDER_TO_NUMBER", "")
+
     # Multi-Model AI Brain upgrade (added 2026-09-21, scoped with Sudeep via
     # AskUserQuestion after he pasted the 82-section "JARVIS MASTER UPGRADE
     # PROMPT" - see progress-tracker.md and ai_provider.py's AIProviderManager

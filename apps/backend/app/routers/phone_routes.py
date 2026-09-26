@@ -38,8 +38,9 @@ from app.ai_provider import get_ai_provider
 from app.config import settings
 from app.database import get_db
 from app.auth import get_current_user
-from app.models import Conversation, Message, PhoneCallRecord, User
+from app.models import Conversation, GoogleAccount, Message, PhoneCallRecord, User
 from app.schemas import PhoneCallRecordOut
+from app import google_client
 
 router = APIRouter(prefix="/api/phone", tags=["phone"])
 
@@ -55,6 +56,54 @@ async def _generate_phone_reply(provider, messages: list[dict], persona: str) ->
             allow_web_search=settings.phone_agent_allow_web_search,
         ),
         timeout=timeout,
+    )
+
+
+def _create_confirmed_booking_event(db: Session, user_id: int, booking: dict) -> str:
+    """Phase 21/22 confirmed-booking auto-create (added 2026-09-26, Sudeep's
+    explicit choice: "for a confirmed booking ... directly in my calendar,
+    no permission needed"). Called ONLY after build_outbound_phone_persona_
+    context's own strict confirmation instructions produced a real
+    [BOOKING_CONFIRMED] marker - i.e. the OTHER PARTY on a call Sudeep
+    himself approved (via the [OUTBOUND_CALL_DRAFT] review card) clearly
+    confirmed the exact requested booking. Never raises - a Google/Calendar
+    problem here must not break the phone call or crash the webhook; it is
+    reported back as a plain string saved to the conversation instead, the
+    same "never let a background problem take down the live call" principle
+    as every other try/except in this router."""
+    if not settings.email_calendar_enabled or not google_client.google_oauth_configured():
+        return (
+            "\u26a0\ufe0f This call ended with a confirmed booking, but Google Calendar isn't "
+            "connected/configured, so it couldn't be added automatically. Please add it to "
+            f"your calendar yourself: \"{booking['summary']}\" ({booking['start_iso']})."
+        )
+    account = db.query(GoogleAccount).filter(GoogleAccount.user_id == user_id).first()
+    if account is None:
+        return (
+            "\u26a0\ufe0f This call ended with a confirmed booking, but Google Calendar isn't "
+            "connected for this account, so it couldn't be added automatically. Please add it "
+            f"to your calendar yourself: \"{booking['summary']}\" ({booking['start_iso']})."
+        )
+    try:
+        access_token = google_client.get_valid_access_token(account, db)
+        result = google_client.create_calendar_event(
+            access_token,
+            booking["summary"],
+            booking["start_iso"],
+            booking["end_iso"],
+            description=booking.get("notes"),
+            location=booking.get("location"),
+            use_default_reminder=True,
+        )
+    except google_client.GoogleAuthError as e:
+        return (
+            f"\u26a0\ufe0f This call ended with a confirmed booking, but adding it to your "
+            f"calendar failed ({e}). Please add it to your calendar yourself: "
+            f"\"{booking['summary']}\" ({booking['start_iso']})."
+        )
+    return (
+        f"\u2705 Confirmed on the call and automatically added to your calendar: "
+        f"\"{booking['summary']}\" ({booking['start_iso']}), event id {result.get('event_id')}."
     )
 
 
@@ -248,6 +297,9 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)) -> Resp
                 and (m.content or "").startswith("Outbound call purpose:")
             )
         ]
+        current_local_time = datetime.datetime.now(
+            phone_agent.phone_timezone(settings.phone_agent_timezone)
+        ).isoformat(timespec="seconds")
         is_outbound = "Outbound Call:" in (convo.title or "")
         if is_outbound:
             outbound_purpose = next(
@@ -263,11 +315,9 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)) -> Resp
                 settings.phone_agent_business_name,
                 outbound_purpose,
                 settings.phone_agent_persona,
+                current_local_time=current_local_time,
             )
         else:
-            current_local_time = datetime.datetime.now(
-                phone_agent.phone_timezone(settings.phone_agent_timezone)
-            ).isoformat(timespec="seconds")
             persona = phone_agent.build_phone_persona_context(
                 settings.phone_agent_business_name,
                 settings.phone_agent_persona,
@@ -293,8 +343,10 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)) -> Resp
                 "I'm having some trouble right now - please try calling back in "
                 f"a moment. {phone_agent.END_CALL_MARKER}"
             )
+        booking_confirmed = None
         if is_outbound:
-            reply_text, appointment_request = raw_reply, None
+            reply_text, booking_confirmed = phone_agent.extract_booking_confirmed_marker(raw_reply)
+            appointment_request = None
         else:
             reply_text, appointment_request = phone_agent.extract_appointment_request_marker(raw_reply)
         reply_text, callback_request = phone_agent.extract_callback_request_marker(reply_text)
@@ -325,6 +377,18 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)) -> Resp
 
     db.add(Message(conversation_id=convo.id, role="assistant", content=reply_text))
     db.commit()
+
+    if booking_confirmed is not None:
+        # Phase 21/22 confirmed-booking auto-create (added 2026-09-26, per
+        # Sudeep's explicit instruction: a confirmed booking goes straight
+        # onto his calendar, no approval step). Recorded as a SEPARATE
+        # message rather than appended to what was just spoken to the
+        # caller - reply_text already went into the live TwiML response
+        # below and can't be edited after the fact; this note is purely for
+        # Sudeep to see later when he reviews the call in chat.
+        booking_note = _create_confirmed_booking_event(db, convo.user_id, booking_confirmed)
+        db.add(Message(conversation_id=convo.id, role="assistant", content=booking_note))
+        db.commit()
 
     if end_call:
         twiml = phone_agent.build_final_twiml(

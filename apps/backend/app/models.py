@@ -365,3 +365,23 @@ class GoogleAccount(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user = relationship("User")
+
+
+class RemindedCalendarEvent(Base):
+    """Reminder feature (added 2026-09-26, per Sudeep's explicit request:
+    "I also want JARVIS to remind me of my appointments and my bookings
+    before the appointment" - see reminder_engine.py). A dedup record only,
+    one row per Google Calendar event id a reminder SMS has already been
+    sent for, so the periodic reminder check never texts Sudeep twice about
+    the same event. Google Calendar itself remains the single source of
+    truth for the event's own details (title, time, location) - this table
+    deliberately duplicates none of that, only the fact that a reminder
+    already went out."""
+    __tablename__ = "reminded_calendar_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    event_id = Column(String, nullable=False, unique=True, index=True)
+    reminded_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User")
