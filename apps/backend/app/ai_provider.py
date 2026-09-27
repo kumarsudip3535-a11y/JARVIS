@@ -19,6 +19,7 @@ from typing import Callable
 # `httpx` below needs no other code changes anywhere in this file.
 import httpx2 as httpx
 from app.config import settings
+from app.debug_agent import log_backend_exception
 
 # Tally daybook read tool (added 2026-09-20, per Sudeep's request that
 # JARVIS answer questions like "what bills were created today" by actually
@@ -2836,6 +2837,7 @@ class AIProviderManager(AIProvider):
 
     def generate_reply(self, *args, **kwargs) -> str:
         if not self.providers:
+            print("[AIProviderManager] No AI provider is configured at all - check AI_PRIMARY_PROVIDER/AI_SECONDARY_PROVIDER/AI_TERTIARY_PROVIDER and each provider's API key in .env.")
             return self._FRIENDLY_UNAVAILABLE_MESSAGE
         last_exc = None
         for name, provider in self.providers:
@@ -2843,6 +2845,18 @@ class AIProviderManager(AIProvider):
                 return provider.generate_reply(*args, **kwargs)
             except ProviderError as e:
                 last_exc = e
+                # Logged here (not silently swallowed) so a real failure
+                # leaves a trail Sudeep or a future debugging session can
+                # actually see - both a console print (visible immediately
+                # in the backend terminal) and a permanent entry in
+                # backend_error_log.jsonl (queryable later via
+                # read_recent_backend_errors, even after the terminal
+                # output has scrolled away). Added 2026-09-27 after a real
+                # live incident where every provider failed silently and
+                # there was no record anywhere of why - see progress-
+                # tracker.md/phase23-team-management.md.
+                print(f"[AIProviderManager] {name} failed ({e.category}): {e}")
+                log_backend_exception("AI_PROVIDER", f"generate_reply:{name}", e)
                 if e.category not in _ERROR_CATEGORIES_WORTH_FALLBACK:
                     # An application-level bug (JARVIS built a malformed
                     # request), not a provider outage - a different
@@ -2863,9 +2877,13 @@ class AIProviderManager(AIProvider):
                 # that provider having a bad moment than a JARVIS-side bug,
                 # and trying the next configured provider costs little
                 # compared to surfacing a raw error when a working fallback
-                # was available.
+                # was available. Logged the same way as a classified
+                # ProviderError above - see that branch's comment.
                 last_exc = e
+                print(f"[AIProviderManager] {name} failed (unclassified {type(e).__name__}): {e}")
+                log_backend_exception("AI_PROVIDER", f"generate_reply:{name}", e)
                 continue
+        print(f"[AIProviderManager] All configured providers failed - returning the friendly unavailable message. Last error: {last_exc}")
         return self._FRIENDLY_UNAVAILABLE_MESSAGE
 
     def extract_memories(self, existing: list, user_message: str, assistant_reply: str) -> dict:
@@ -2922,6 +2940,7 @@ class AIProviderManager(AIProvider):
 
     def learn_skill(self, topic: str) -> dict:
         if not self.providers:
+            print("[AIProviderManager] No AI provider is configured at all - check AI_PRIMARY_PROVIDER/AI_SECONDARY_PROVIDER/AI_TERTIARY_PROVIDER and each provider's API key in .env.")
             raise RuntimeError(self._FRIENDLY_UNAVAILABLE_MESSAGE)
         last_exc = None
         for name, provider in self.providers:
@@ -2929,11 +2948,20 @@ class AIProviderManager(AIProvider):
                 return provider.learn_skill(topic)
             except ProviderError as e:
                 last_exc = e
+                # Logged here (not silently swallowed) for the same reason
+                # as generate_reply's fallback loop - see the comment there
+                # and progress-tracker.md/phase23-team-management.md for
+                # the 2026-09-27 incident that prompted this. Added
+                # 2026-09-27.
+                print(f"[AIProviderManager] {name} failed ({e.category}) during learn_skill: {e}")
+                log_backend_exception("AI_PROVIDER", f"learn_skill:{name}", e)
                 if e.category not in _ERROR_CATEGORIES_WORTH_FALLBACK:
                     raise
                 continue
             except Exception as e:
                 last_exc = e
+                print(f"[AIProviderManager] {name} failed (unclassified {type(e).__name__}) during learn_skill: {e}")
+                log_backend_exception("AI_PROVIDER", f"learn_skill:{name}", e)
                 continue
         # Every configured provider failed - re-raise the last real error
         # (unlike generate_reply, learn_skill's own ABC contract says it
@@ -2941,6 +2969,7 @@ class AIProviderManager(AIProvider):
         # clear error instead", so skill_routes.py already expects and
         # handles an exception here, unlike chat_routes.py's generate_reply
         # call).
+        print(f"[AIProviderManager] All configured providers failed during learn_skill. Last error: {last_exc}")
         raise last_exc if last_exc is not None else RuntimeError(self._FRIENDLY_UNAVAILABLE_MESSAGE)
 
 
