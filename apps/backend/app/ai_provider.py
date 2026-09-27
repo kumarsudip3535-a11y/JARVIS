@@ -20,7 +20,7 @@ from typing import Callable
 # `httpx` below needs no other code changes anywhere in this file.
 import httpx2 as httpx
 from app.config import settings
-from app.debug_agent import log_backend_exception
+from app.debug_agent import log_backend_exception, log_ai_usage, format_usage_report
 
 # Tally daybook read tool (added 2026-09-20, per Sudeep's request that
 # JARVIS answer questions like "what bills were created today" by actually
@@ -188,6 +188,30 @@ HEALTH_CHECK_TOOL = {
         "failing after that retry, not a one-off hiccup."
     ),
     "input_schema": {"type": "object", "properties": {}, "required": []},
+}
+
+# AI usage/cost-tracking tool (added 2026-09-27, per Sudeep's request to
+# reduce and actually see JARVIS's token usage - see debug_agent.py's
+# log_ai_usage/format_usage_report and AIProviderManager.generate_reply,
+# which logs real, provider-reported token usage after every successful
+# reply). Read-only, same client-side tool-use loop as every other tool
+# here.
+USAGE_REPORT_TOOL = {
+    "name": "usage_report",
+    "description": (
+        "Report JARVIS's own real, logged AI usage - total requests and tokens over a recent window, "
+        "broken down by which provider (Gemini/Groq/Anthropic) handled them and whether each was "
+        "classified a simple or heavy task. Use this whenever Sudeep asks about token usage, cost, or "
+        "which AI provider is handling his requests - always computed from real logged data, never "
+        "estimated or guessed."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "days": {"type": "integer", "description": "How many days back to summarize - optional, default 7, max 90"},
+        },
+        "required": [],
+    },
 }
 
 # Phase 17 "AI agent orchestration" tool (added 2026-09-20, scoped with
@@ -633,6 +657,7 @@ _KNOWN_CLIENT_TOOL_NAMES = {
     DEBUG_LIST_FILES_TOOL["name"],
     DEBUG_READ_SOURCE_TOOL["name"],
     HEALTH_CHECK_TOOL["name"],
+    USAGE_REPORT_TOOL["name"],
     CONSULT_AGENT_TOOL["name"],
     CREATE_AUTOMATION_TOOL["name"],
     LIST_AUTOMATIONS_TOOL["name"],
@@ -999,6 +1024,7 @@ def _dispatch_client_tool(
     debug_list_files: "Callable[..., str] | None" = None,
     debug_read_source: "Callable[..., str] | None" = None,
     health_check_query: "Callable[[], str] | None" = None,
+    usage_report_query: "Callable[[int], str] | None" = None,
     consult_agent_query: "Callable[[str, str], str] | None" = None,
     create_automation_action: "Callable[..., str] | None" = None,
     list_automations_action: "Callable[[], str] | None" = None,
@@ -1069,6 +1095,11 @@ def _dispatch_client_tool(
             return health_check_query()
         except Exception as e:
             return f"Couldn't run the health check: {e}"
+    elif name == "usage_report" and usage_report_query is not None:
+        try:
+            return usage_report_query(tool_input.get("days", 7))
+        except Exception as e:
+            return f"Couldn't generate the usage report: {e}"
     elif name == "consult_agent" and consult_agent_query is not None:
         try:
             return consult_agent_query(
@@ -1221,6 +1252,7 @@ def _offered_tool_specs(
     debug_list_files=None,
     debug_read_source=None,
     health_check_query=None,
+    usage_report_query=None,
     custom_tool_specs=None,
     custom_tool_invoke=None,
     consult_agent_query=None,
@@ -1266,6 +1298,8 @@ def _offered_tool_specs(
         tools.append(DEBUG_READ_SOURCE_TOOL)
     if health_check_query is not None:
         tools.append(HEALTH_CHECK_TOOL)
+    if usage_report_query is not None:
+        tools.append(USAGE_REPORT_TOOL)
     if custom_tool_invoke is not None and custom_tool_specs:
         tools.extend(custom_tool_specs)
     if consult_agent_query is not None:
@@ -1311,6 +1345,7 @@ def _any_client_tool_offered(
     debug_list_files=None,
     debug_read_source=None,
     health_check_query=None,
+    usage_report_query=None,
     custom_tool_specs=None,
     custom_tool_invoke=None,
     consult_agent_query=None,
@@ -1340,6 +1375,7 @@ def _any_client_tool_offered(
         or debug_list_files is not None
         or debug_read_source is not None
         or health_check_query is not None
+        or usage_report_query is not None
         or (custom_tool_invoke is not None and bool(custom_tool_specs))
         or consult_agent_query is not None
         or create_automation_action is not None
@@ -1517,6 +1553,7 @@ class AIProvider(ABC):
         debug_list_files: "Callable[..., str] | None" = None,
         debug_read_source: "Callable[..., str] | None" = None,
         health_check_query: "Callable[[], str] | None" = None,
+        usage_report_query: "Callable[[int], str] | None" = None,
         custom_tool_specs: "list[dict] | None" = None,
         custom_tool_invoke: "Callable[[str, dict], str] | None" = None,
         consult_agent_query: "Callable[[str, str], str] | None" = None,
@@ -1686,6 +1723,13 @@ class AnthropicProvider(AIProvider):
         import anthropic
         self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         self.model = settings.anthropic_model
+        # Real, provider-reported token usage (never estimated), accumulated
+        # across every _create_message() call this instance makes - see
+        # _accumulate_usage below and AIProviderManager.generate_reply, which
+        # reads this after a successful reply for the usage_report tool.
+        # Added 2026-09-27, per Sudeep's request to reduce and see JARVIS's
+        # token usage - see progress-tracker.md/phase23-team-management.md.
+        self.last_usage = {"input_tokens": 0, "output_tokens": 0}
 
         # The web search tool runs entirely on Anthropic's side (Claude decides
         # on its own when a question needs a live search, runs it, and gets the
@@ -1719,6 +1763,7 @@ class AnthropicProvider(AIProvider):
         debug_list_files: "Callable[..., str] | None" = None,
         debug_read_source: "Callable[..., str] | None" = None,
         health_check_query: "Callable[[], str] | None" = None,
+        usage_report_query: "Callable[[int], str] | None" = None,
         custom_tool_specs: "list[dict] | None" = None,
         custom_tool_invoke: "Callable[[str, dict], str] | None" = None,
         consult_agent_query: "Callable[[str, str], str] | None" = None,
@@ -1739,6 +1784,7 @@ class AnthropicProvider(AIProvider):
         mark_task_done_action: "Callable[[str, str], str] | None" = None,
         team_workload_report_query: "Callable[[], str] | None" = None,
     ) -> str:
+        self.last_usage = {"input_tokens": 0, "output_tokens": 0}
         # Real current-time grounding, added 2026-09-21 after a real failure:
         # asked to schedule a one-time automation "2 minutes from now", the
         # model had no actual notion of what time it currently is (nothing
@@ -1777,6 +1823,7 @@ class AnthropicProvider(AIProvider):
             debug_list_files=debug_list_files,
             debug_read_source=debug_read_source,
             health_check_query=health_check_query,
+            usage_report_query=usage_report_query,
             custom_tool_specs=custom_tool_specs,
             custom_tool_invoke=custom_tool_invoke,
             consult_agent_query=consult_agent_query,
@@ -1827,6 +1874,7 @@ class AnthropicProvider(AIProvider):
             debug_list_files=debug_list_files,
             debug_read_source=debug_read_source,
             health_check_query=health_check_query,
+            usage_report_query=usage_report_query,
             custom_tool_specs=custom_tool_specs,
             custom_tool_invoke=custom_tool_invoke,
             consult_agent_query=consult_agent_query,
@@ -1875,6 +1923,7 @@ class AnthropicProvider(AIProvider):
                     debug_list_files=debug_list_files,
                     debug_read_source=debug_read_source,
                     health_check_query=health_check_query,
+                    usage_report_query=usage_report_query,
                     consult_agent_query=consult_agent_query,
                     create_automation_action=create_automation_action,
                     list_automations_action=list_automations_action,
@@ -2004,7 +2053,21 @@ class AnthropicProvider(AIProvider):
         )
         if tools:
             kwargs["tools"] = tools
-        return self.client.messages.create(**kwargs)
+        response = self.client.messages.create(**kwargs)
+        self._accumulate_usage(response)
+        return response
+
+    def _accumulate_usage(self, response) -> None:
+        """Adds one API response's real usage numbers to self.last_usage -
+        accumulates (never overwrites) since a single generate_reply() call
+        can make several of these in a multi-round tool-use loop (see
+        generate_reply's own while-loop above). Never raises - a missing or
+        unexpected usage shape must never break the actual reply."""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        self.last_usage["input_tokens"] += getattr(usage, "input_tokens", 0) or 0
+        self.last_usage["output_tokens"] += getattr(usage, "output_tokens", 0) or 0
 
     @staticmethod
     def _extract_reply(response) -> str:
@@ -2164,6 +2227,13 @@ class GeminiProvider(AIProvider):
         self.api_key = settings.gemini_api_key
         self.model = model or settings.gemini_model
         self._client = httpx.Client(timeout=settings.ai_request_timeout_ms / 1000)
+        # Real, provider-reported token usage (never estimated), accumulated
+        # across every _post() call this instance makes - see
+        # _accumulate_usage below and AIProviderManager.generate_reply, which
+        # reads this after a successful reply for the usage_report tool.
+        # Added 2026-09-27, per Sudeep's request to reduce and see JARVIS's
+        # token usage - see progress-tracker.md/phase23-team-management.md.
+        self.last_usage = {"input_tokens": 0, "output_tokens": 0}
 
     # A brief 503 "high demand, usually temporary" from Gemini is common
     # and normally clears within a couple of seconds - added 2026-09-27
@@ -2237,10 +2307,22 @@ class GeminiProvider(AIProvider):
                 raise ProviderError(
                     category, f"Gemini rejected the request ({resp.status_code}): {resp.text[:300]}", "gemini"
                 )
-            return resp.json()
+            data = resp.json()
+            self._accumulate_usage(data)
+            return data
         # Unreachable - the loop above always either returns, continues, or
         # raises before exhausting max_attempts.
         raise ProviderError("SERVER_ERROR", "Gemini request failed after retries", "gemini")
+
+    def _accumulate_usage(self, data: dict) -> None:
+        """Adds one API response's real usage numbers (Gemini's
+        usageMetadata) to self.last_usage - accumulates (never overwrites)
+        since a single generate_reply() call can make several of these in a
+        multi-round tool-use loop. Never raises - a missing or unexpected
+        usage shape must never break the actual reply."""
+        usage = (data or {}).get("usageMetadata") or {}
+        self.last_usage["input_tokens"] += usage.get("promptTokenCount", 0) or 0
+        self.last_usage["output_tokens"] += usage.get("candidatesTokenCount", 0) or 0
 
     def generate_reply(
         self,
@@ -2256,6 +2338,7 @@ class GeminiProvider(AIProvider):
         debug_list_files=None,
         debug_read_source=None,
         health_check_query=None,
+        usage_report_query=None,
         custom_tool_specs=None,
         custom_tool_invoke=None,
         consult_agent_query=None,
@@ -2276,6 +2359,7 @@ class GeminiProvider(AIProvider):
         mark_task_done_action=None,
         team_workload_report_query=None,
     ) -> str:
+        self.last_usage = {"input_tokens": 0, "output_tokens": 0}
         system_prompt = _build_system_prompt(
             memory_context, skill_context, tally_context, agent_context,
             consult_agent_query, consult_directory_context,
@@ -2287,6 +2371,7 @@ class GeminiProvider(AIProvider):
             debug_list_files=debug_list_files,
             debug_read_source=debug_read_source,
             health_check_query=health_check_query,
+            usage_report_query=usage_report_query,
             custom_tool_specs=custom_tool_specs,
             custom_tool_invoke=custom_tool_invoke,
             consult_agent_query=consult_agent_query,
@@ -2327,6 +2412,7 @@ class GeminiProvider(AIProvider):
             debug_list_files=debug_list_files,
             debug_read_source=debug_read_source,
             health_check_query=health_check_query,
+            usage_report_query=usage_report_query,
             custom_tool_specs=custom_tool_specs,
             custom_tool_invoke=custom_tool_invoke,
             consult_agent_query=consult_agent_query,
@@ -2372,6 +2458,7 @@ class GeminiProvider(AIProvider):
                     debug_list_files=debug_list_files,
                     debug_read_source=debug_read_source,
                     health_check_query=health_check_query,
+                    usage_report_query=usage_report_query,
                     consult_agent_query=consult_agent_query,
                     create_automation_action=create_automation_action,
                     list_automations_action=list_automations_action,
@@ -2502,6 +2589,13 @@ class GroqProvider(AIProvider):
         self.api_key = settings.groq_api_key
         self.model = model or settings.groq_model
         self._client = httpx.Client(timeout=settings.ai_request_timeout_ms / 1000)
+        # Real, provider-reported token usage (never estimated), accumulated
+        # across every _post() call this instance makes - see
+        # _accumulate_usage below and AIProviderManager.generate_reply, which
+        # reads this after a successful reply for the usage_report tool.
+        # Added 2026-09-27, per Sudeep's request to reduce and see JARVIS's
+        # token usage - see progress-tracker.md/phase23-team-management.md.
+        self.last_usage = {"input_tokens": 0, "output_tokens": 0}
 
     def _post(self, payload: dict) -> dict:
         """Same classify-on-the-way-out pattern as GeminiProvider._post -
@@ -2545,7 +2639,19 @@ class GroqProvider(AIProvider):
             raise ProviderError(
                 category, f"Groq rejected the request ({resp.status_code}): {resp.text[:300]}", "groq"
             )
-        return resp.json()
+        data = resp.json()
+        self._accumulate_usage(data)
+        return data
+
+    def _accumulate_usage(self, data: dict) -> None:
+        """Adds one API response's real usage numbers (Groq's OpenAI-
+        compatible "usage" object) to self.last_usage - accumulates (never
+        overwrites) since a single generate_reply() call can make several
+        of these in a multi-round tool-use loop. Never raises - a missing
+        or unexpected usage shape must never break the actual reply."""
+        usage = (data or {}).get("usage") or {}
+        self.last_usage["input_tokens"] += usage.get("prompt_tokens", 0) or 0
+        self.last_usage["output_tokens"] += usage.get("completion_tokens", 0) or 0
 
     def generate_reply(
         self,
@@ -2561,6 +2667,7 @@ class GroqProvider(AIProvider):
         debug_list_files=None,
         debug_read_source=None,
         health_check_query=None,
+        usage_report_query=None,
         custom_tool_specs=None,
         custom_tool_invoke=None,
         consult_agent_query=None,
@@ -2581,6 +2688,7 @@ class GroqProvider(AIProvider):
         mark_task_done_action=None,
         team_workload_report_query=None,
     ) -> str:
+        self.last_usage = {"input_tokens": 0, "output_tokens": 0}
         system_prompt = _build_system_prompt(
             memory_context, skill_context, tally_context, agent_context,
             consult_agent_query, consult_directory_context,
@@ -2592,6 +2700,7 @@ class GroqProvider(AIProvider):
             debug_list_files=debug_list_files,
             debug_read_source=debug_read_source,
             health_check_query=health_check_query,
+            usage_report_query=usage_report_query,
             custom_tool_specs=custom_tool_specs,
             custom_tool_invoke=custom_tool_invoke,
             consult_agent_query=consult_agent_query,
@@ -2629,6 +2738,7 @@ class GroqProvider(AIProvider):
             debug_list_files=debug_list_files,
             debug_read_source=debug_read_source,
             health_check_query=health_check_query,
+            usage_report_query=usage_report_query,
             custom_tool_specs=custom_tool_specs,
             custom_tool_invoke=custom_tool_invoke,
             consult_agent_query=consult_agent_query,
@@ -2679,6 +2789,7 @@ class GroqProvider(AIProvider):
                     debug_list_files=debug_list_files,
                     debug_read_source=debug_read_source,
                     health_check_query=health_check_query,
+                    usage_report_query=usage_report_query,
                     consult_agent_query=consult_agent_query,
                     create_automation_action=create_automation_action,
                     list_automations_action=list_automations_action,
@@ -2779,6 +2890,47 @@ _ERROR_CATEGORIES_WORTH_FALLBACK = {
 }
 
 
+# Cost-aware provider routing (added 2026-09-27, per Sudeep's explicit
+# request to reduce JARVIS's token usage - see config.py's
+# ai_complexity_routing_enabled and progress-tracker.md/
+# phase23-team-management.md for the live incident that prompted this).
+# Deliberately a plain, deterministic heuristic - NOT another AI call - a
+# routing decision meant to save tokens must not itself cost tokens to
+# make. Getting this wrong is low-stakes by design: every provider in the
+# chain can answer any request equally correctly, since none of them lose
+# a tool or capability based on this classification - it only decides
+# which provider is tried FIRST, never which tools are offered.
+_HEAVY_TASK_KEYWORDS = (
+    "draft", "write me", "compose", "analyz", "summariz", "summary of",
+    "in detail", "explain in depth", "strategy", "proposal", "compare",
+    "pros and cons", "brainstorm", "outline", "essay", "translate",
+    "rewrite", "improve this", "edit this", "long-form", "comprehensive",
+)
+_HEAVY_TASK_MIN_WORDS = 40
+
+
+def _classify_task_complexity(messages: "list[dict] | None") -> str:
+    """Returns "heavy" or "simple" for the latest user message in a
+    generate_reply() call - "heavy" if it contains a keyword suggesting
+    real drafting/analysis/reasoning work, or is just long, "simple"
+    otherwise (the common case: a short, routine, usually tool-driven
+    request like checking a task or adding a team member). See
+    AIProviderManager.generate_reply for how this picks provider order."""
+    text = ""
+    for m in reversed(messages or []):
+        if isinstance(m, dict) and m.get("role") == "user":
+            text = m.get("content") or ""
+            break
+    if not isinstance(text, str) or not text.strip():
+        return "simple"
+    lowered = text.lower()
+    if any(kw in lowered for kw in _HEAVY_TASK_KEYWORDS):
+        return "heavy"
+    if len(text.split()) >= _HEAVY_TASK_MIN_WORDS:
+        return "heavy"
+    return "simple"
+
+
 class AIProviderManager(AIProvider):
     """Routes every AIProvider call through a configurable chain of
     providers with automatic fallback - the "Multi-Model AI Brain" upgrade
@@ -2858,6 +3010,21 @@ class AIProviderManager(AIProvider):
                 # missing key.
                 self.init_errors[name] = str(e)
 
+        # Cost-aware routing (added 2026-09-27 - see config.py's
+        # ai_complexity_routing_enabled and _classify_task_complexity
+        # above): the same configured providers, reordered so "anthropic"
+        # (better reasoning, worth the token cost) is tried FIRST for a
+        # task classified "heavy" - falling back to the normal chain order
+        # exactly as before if Anthropic can't answer (e.g. no credits).
+        # A stable sort, so when Anthropic isn't in the chain at all this
+        # is identical to self.providers - never a behavior change for
+        # someone who hasn't configured it. Used only when a request is
+        # classified "heavy"; "simple" (the common case) keeps using
+        # self.providers untouched.
+        self._heavy_provider_order = sorted(
+            self.providers, key=lambda item: 0 if item[0] == "anthropic" else 1
+        )
+
     def _first_supporting_documents(self):
         for name, provider in self.providers:
             if getattr(provider, "SUPPORTS_DOCUMENTS", False):
@@ -2868,10 +3035,31 @@ class AIProviderManager(AIProvider):
         if not self.providers:
             print("[AIProviderManager] No AI provider is configured at all - check AI_PRIMARY_PROVIDER/AI_SECONDARY_PROVIDER/AI_TERTIARY_PROVIDER and each provider's API key in .env.")
             return self._FRIENDLY_UNAVAILABLE_MESSAGE
+
+        # Cost-aware routing (added 2026-09-27, per Sudeep's request to
+        # reduce JARVIS's token usage - see config.py's
+        # ai_complexity_routing_enabled and _classify_task_complexity's own
+        # docstring above). messages is always the first positional arg in
+        # every real call site (chat_routes.py's send_message/
+        # run_agent_subquery both call it that way) - kwargs.get("messages")
+        # is just a defensive fallback, never actually hit today.
+        messages = args[0] if args else kwargs.get("messages")
+        category = "simple"
+        if settings.ai_complexity_routing_enabled and messages:
+            category = _classify_task_complexity(messages)
+        provider_order = self._heavy_provider_order if category == "heavy" else self.providers
+
         last_exc = None
-        for name, provider in self.providers:
+        for name, provider in provider_order:
             try:
-                return provider.generate_reply(*args, **kwargs)
+                reply = provider.generate_reply(*args, **kwargs)
+                if settings.usage_tracking_enabled:
+                    usage = getattr(provider, "last_usage", None) or {}
+                    log_ai_usage(
+                        name, category,
+                        usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+                    )
+                return reply
             except ProviderError as e:
                 last_exc = e
                 # Logged here (not silently swallowed) so a real failure

@@ -51,8 +51,16 @@ _BACKEND_ROOT = os.path.dirname(_APP_DIR)                       # .../apps/backe
 
 BACKEND_ERROR_LOG_PATH = os.path.join(_APP_DIR, "backend_error_log.jsonl")
 _TALLY_ERROR_LOG_PATH = os.path.join(_APP_DIR, "tally_error_log.jsonl")
+# AI usage log (added 2026-09-27, per Sudeep's request to actually see where
+# JARVIS's token usage goes - see ai_provider.py's AIProviderManager.
+# generate_reply, which calls log_ai_usage below after every successful
+# reply) - deliberately a separate file from the error log above, so a busy
+# usage log (one entry per chat reply, far more frequent than real errors)
+# never crowds out error history or vice versa.
+AI_USAGE_LOG_PATH = os.path.join(_APP_DIR, "ai_usage_log.jsonl")
 
 _MAX_LOG_ENTRIES = 200
+_MAX_USAGE_LOG_ENTRIES = 3000
 _MAX_TRACEBACK_CHARS = 4000
 
 # Never let JARVIS read these, even though they're technically under the
@@ -90,11 +98,100 @@ def log_backend_exception(method: str, path: str, exc: Exception) -> None:
         pass
 
 
-def _append_capped(path: str, entry: dict) -> None:
+def log_ai_usage(provider: str, category: str, input_tokens: int, output_tokens: int) -> None:
+    """Permanently records one successful generate_reply() call's real,
+    provider-reported token usage (see AIProviderManager.generate_reply in
+    ai_provider.py) - added 2026-09-27 per Sudeep's request to actually see
+    where JARVIS's token usage goes, and to support the cost-aware provider
+    routing added alongside it (_classify_task_complexity). Always the
+    real numbers each provider's own API response reports, never estimated
+    - same "never trust the AI's own arithmetic, and never guess a number
+    when the real source is reachable" principle as every other reporting
+    feature in this project. Never raises - a logging failure here must
+    never break the chat reply it's describing."""
+    try:
+        entry = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "provider": provider,
+            "category": category,
+            "input_tokens": int(input_tokens or 0),
+            "output_tokens": int(output_tokens or 0),
+        }
+        _append_capped(AI_USAGE_LOG_PATH, entry, max_entries=_MAX_USAGE_LOG_ENTRIES)
+    except Exception:
+        pass
+
+
+def format_usage_report(days: "int | str" = 7) -> str:
+    """Formats a real, computed-not-guessed usage summary for the model to
+    read back to Sudeep (the usage_report chat tool - see ai_provider.py) -
+    total requests and tokens over the window, broken down by provider
+    (Gemini/Groq/Anthropic) and by task category (simple/heavy, see
+    _classify_task_complexity), entirely from log_ai_usage's own real
+    entries. Never raises - a reporting hiccup here must never break the
+    chat reply that's asking for it."""
+    try:
+        days = max(1, min(int(days or 7), 90))
+    except (TypeError, ValueError):
+        days = 7
+
+    entries = _read_log_entries(AI_USAGE_LOG_PATH, "usage")
+    if not entries:
+        return (
+            "No AI usage has been logged yet - this starts recording the moment "
+            "JARVIS finishes its next chat reply."
+        )
+
+    cutoff = time.time() - days * 86400
+
+    def _entry_epoch(e: dict) -> float:
+        try:
+            return time.mktime(time.strptime(e.get("timestamp", ""), "%Y-%m-%dT%H:%M:%SZ"))
+        except (TypeError, ValueError):
+            return 0.0
+
+    recent = [e for e in entries if _entry_epoch(e) >= cutoff]
+    if not recent:
+        return f"No AI usage has been logged in the last {days} day(s)."
+
+    total_requests = len(recent)
+    total_input = sum(int(e.get("input_tokens", 0) or 0) for e in recent)
+    total_output = sum(int(e.get("output_tokens", 0) or 0) for e in recent)
+    total_tokens = total_input + total_output
+
+    by_provider: dict = {}
+    by_category: dict = {}
+    for e in recent:
+        provider = e.get("provider") or "?"
+        stats = by_provider.setdefault(provider, {"requests": 0, "tokens": 0})
+        stats["requests"] += 1
+        stats["tokens"] += int(e.get("input_tokens", 0) or 0) + int(e.get("output_tokens", 0) or 0)
+        category = e.get("category") or "?"
+        by_category[category] = by_category.get(category, 0) + 1
+
+    lines = [
+        f"AI usage over the last {days} day(s): {total_requests} request(s), "
+        f"{total_tokens:,} total tokens ({total_input:,} in / {total_output:,} out).",
+        "",
+        "By provider:",
+    ]
+    for provider, stats in sorted(by_provider.items(), key=lambda kv: -kv[1]["tokens"]):
+        lines.append(f"- {provider}: {stats['requests']} request(s), {stats['tokens']:,} tokens")
+    lines.append("")
+    lines.append("By task type (see the cost-aware routing this feeds):")
+    for category, count in sorted(by_category.items(), key=lambda kv: -kv[1]):
+        lines.append(f"- {category}: {count} request(s)")
+    return "\n".join(lines)
+
+
+def _append_capped(path: str, entry: dict, max_entries: int = _MAX_LOG_ENTRIES) -> None:
     """Same capped-rewrite pattern as tally_client.py's log_tally_failure /
     _log_daybook_query: this environment can't always delete files, so the
-    log is rewritten with only the most recent _MAX_LOG_ENTRIES rather than
-    growing forever."""
+    log is rewritten with only the most recent max_entries rather than
+    growing forever. max_entries defaults to _MAX_LOG_ENTRIES (the original
+    behavior, unchanged for log_backend_exception's own call site below) -
+    log_ai_usage passes its own, larger _MAX_USAGE_LOG_ENTRIES instead,
+    since a usage entry is written far more often than a real error."""
     entries = []
     if os.path.exists(path):
         try:
@@ -109,7 +206,7 @@ def _append_capped(path: str, entry: dict) -> None:
         except Exception:
             entries = []
     entries.append(entry)
-    entries = entries[-_MAX_LOG_ENTRIES:]
+    entries = entries[-max_entries:]
     with open(path, "w", encoding="utf-8") as f:
         for e in entries:
             f.write(json.dumps(e) + "\n")

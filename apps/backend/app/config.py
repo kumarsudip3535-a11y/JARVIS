@@ -368,6 +368,41 @@ class Settings(BaseSettings):
     # above and google_client.py's own get_calendar_timezone.
     firebase_attendance_timezone: str = os.getenv("FIREBASE_ATTENDANCE_TIMEZONE", "Asia/Kolkata")
 
+    # --- AI provider cost optimization + usage tracking (added 2026-09-27) ---
+    # Sudeep asked how to reduce JARVIS's token usage. Investigated live via
+    # a real incident that same day: a Gemini "high demand" 503 stacked with
+    # a genuine Groq token-per-minute limit and Anthropic's exhausted
+    # credits (see phase23-team-management.md) - the actual fix for THAT was
+    # the Gemini retry in ai_provider.py's GeminiProvider._post. These
+    # settings are the separate, deliberate cost-reduction follow-up Sudeep
+    # asked for on top of it.
+    #
+    # Routes each message to Gemini/Groq first for routine, tool-driven
+    # requests (cheap/free) and to Anthropic first for genuinely complex
+    # ones (better reasoning, worth the token cost) - see ai_provider.py's
+    # _classify_task_complexity for the actual (deterministic, zero-extra-
+    # token) classifier. Anthropic still falls back to Gemini/Groq exactly
+    # as before if it can't answer (e.g. no credits), so this is safe to
+    # leave on even while Anthropic's credit balance is empty.
+    ai_complexity_routing_enabled: bool = os.getenv("AI_COMPLEXITY_ROUTING_ENABLED", "true").lower() == "true"
+    # Every generate_reply() call's real, provider-reported token usage
+    # (never estimated) is logged to ai_usage_log.jsonl - see debug_agent.
+    # py's log_ai_usage/format_usage_report and the new usage_report chat
+    # tool (ask JARVIS directly, e.g. "how's my usage looking this week").
+    # Kept as its own switch, independent of the routing flag above, since
+    # either is useful without the other.
+    usage_tracking_enabled: bool = os.getenv("USAGE_TRACKING_ENABLED", "true").lower() == "true"
+    # How many of the most recent chat messages actually get sent to the AI
+    # provider on each reply. Unbounded conversation history was a real,
+    # growing contributor to token usage in the same live incident above (a
+    # failing request needed 15,382 tokens, up from 8,807 earlier the same
+    # day, purely from the conversation growing longer) - capped here,
+    # shared by every provider, rather than trimmed differently per
+    # provider. Durable facts Sudeep has told JARVIS still persist via the
+    # separate Memory feature regardless of this cap, so a message aging out
+    # of this window doesn't mean JARVIS forgets everything from it.
+    ai_history_window_messages: int = int(os.getenv("AI_HISTORY_WINDOW_MESSAGES", "40"))
+
     class Config:
         env_file = ".env"
         # Fixed 2026-09-21: pydantic-settings' default for BaseSettings is

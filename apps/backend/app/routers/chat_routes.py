@@ -1523,6 +1523,14 @@ def build_reply_context(
     # the debug tools above.
     health_check_query = health_check.run_and_format_health_check if settings.health_check_enabled else None
 
+    # AI usage/cost-tracking tool (added 2026-09-27, per Sudeep's request to
+    # reduce and actually see JARVIS's token usage - see config.py's
+    # usage_tracking_enabled and debug_agent.py's format_usage_report).
+    # Same "not gated per-agent" v1 choice as the debug/health-check tools
+    # above - read-only introspection into JARVIS's own usage, not a
+    # business feature that needs per-agent permission.
+    usage_report_query = debug_agent.format_usage_report if settings.usage_tracking_enabled else None
+
     # Phase 16 "Tool/plugin architecture": unlike the built-in tools above,
     # custom tools ARE gated per-agent by design - only offered at all in an
     # agent conversation, and only this specific agent's own assigned_
@@ -1630,6 +1638,7 @@ def build_reply_context(
             "debug_list_files": debug_list_files,
             "debug_read_source": debug_read_source,
             "health_check_query": health_check_query,
+            "usage_report_query": usage_report_query,
             "custom_tool_specs": custom_tool_specs,
             "custom_tool_invoke": custom_tool_invoke,
             "consult_agent_query": consult_agent_query,
@@ -1723,6 +1732,19 @@ def send_message(
         .all()
     )
     ai_messages = [{"role": m.role, "content": m.content} for m in history]
+    # Cap how much raw conversation history actually gets sent to the AI
+    # provider on each reply (added 2026-09-27, per Sudeep's request to
+    # reduce JARVIS's token usage - see config.py's
+    # ai_history_window_messages). A real, growing contributor: the exact
+    # same live incident that led to the Gemini-retry fix also showed one
+    # request needing 15,382 tokens where an earlier one in the same
+    # conversation needed 8,807 - purely from history growing longer, not
+    # from any change in tools or request shape. This only trims what's
+    # SENT per reply, never what's stored - the full history stays in the
+    # database, and durable facts persist separately via Memory regardless.
+    history_window = max(1, settings.ai_history_window_messages)
+    if len(ai_messages) > history_window:
+        ai_messages = ai_messages[-history_window:]
 
     ctx = build_reply_context(db, current_user.id, agent, allow_tally=True, allow_automation_management=True)
     consulted_names = ctx["consulted_names"]
