@@ -1,5 +1,6 @@
 import datetime
 import json
+import time
 from abc import ABC, abstractmethod
 from typing import Callable
 # Multi-Model AI Brain upgrade (2026-09-21): originally written as `import
@@ -2164,54 +2165,82 @@ class GeminiProvider(AIProvider):
         self.model = model or settings.gemini_model
         self._client = httpx.Client(timeout=settings.ai_request_timeout_ms / 1000)
 
+    # A brief 503 "high demand, usually temporary" from Gemini is common
+    # and normally clears within a couple of seconds - added 2026-09-27
+    # after a live incident where a single such 503 knocked Gemini out of
+    # the fallback chain entirely, and Groq (its own real TPM limit) and
+    # Anthropic (credits exhausted) both had genuine reasons to fail right
+    # behind it too, so JARVIS surfaced "I'm temporarily unable to reach my
+    # AI providers" even though the real underlying issue was a few-second
+    # Gemini blip. See progress-tracker.md/phase23-team-management.md.
+    _RETRY_BACKOFF_SECONDS = [1.5, 3.0]  # delay before the 2nd and 3rd attempt
+
     def _post(self, model_path: str, payload: dict) -> dict:
         """POSTs to the Gemini REST API and classifies any failure into a
         ProviderError with a normalized category (see ProviderError's own
         docstring) - this is what lets AIProviderManager decide whether a
         Gemini failure is worth falling back to Groq/Claude on, without
-        knowing anything Gemini-specific itself."""
+        knowing anything Gemini-specific itself. Retries a couple of times
+        (short, bounded backoff) on a 5xx server error before giving up -
+        see _RETRY_BACKOFF_SECONDS's comment above for why - but a genuine,
+        still-failing-after-retries outage is still raised as SERVER_ERROR
+        exactly as before, so AIProviderManager's own cross-provider
+        fallback is unchanged for a real outage."""
         url = f"{self._BASE_URL}/{model_path}"
-        try:
-            resp = self._client.post(
-                url,
-                headers={"x-goog-api-key": self.api_key, "Content-Type": "application/json"},
-                json=payload,
-            )
-        except httpx.TimeoutException as e:
-            raise ProviderError("TIMEOUT", f"Gemini request timed out: {e}", "gemini") from e
-        except httpx.ConnectError as e:
-            raise ProviderError("PROVIDER_UNAVAILABLE", f"Couldn't reach Gemini: {e}", "gemini") from e
-        except httpx.HTTPError as e:
-            raise ProviderError("PROVIDER_UNAVAILABLE", f"Gemini request failed: {e}", "gemini") from e
+        max_attempts = len(self._RETRY_BACKOFF_SECONDS) + 1
+        for attempt in range(max_attempts):
+            try:
+                resp = self._client.post(
+                    url,
+                    headers={"x-goog-api-key": self.api_key, "Content-Type": "application/json"},
+                    json=payload,
+                )
+            except httpx.TimeoutException as e:
+                raise ProviderError("TIMEOUT", f"Gemini request timed out: {e}", "gemini") from e
+            except httpx.ConnectError as e:
+                raise ProviderError("PROVIDER_UNAVAILABLE", f"Couldn't reach Gemini: {e}", "gemini") from e
+            except httpx.HTTPError as e:
+                raise ProviderError("PROVIDER_UNAVAILABLE", f"Gemini request failed: {e}", "gemini") from e
 
-        if resp.status_code in (401, 403):
-            raise ProviderError(
-                "AUTHENTICATION_ERROR",
-                f"Gemini authentication failed ({resp.status_code}): {resp.text[:300]}",
-                "gemini",
-            )
-        if resp.status_code == 429:
-            raise ProviderError("RATE_LIMIT", f"Gemini rate limit hit: {resp.text[:300]}", "gemini")
-        if resp.status_code >= 500:
-            raise ProviderError(
-                "SERVER_ERROR", f"Gemini server error ({resp.status_code}): {resp.text[:300]}", "gemini"
-            )
-        if resp.status_code == 404:
-            raise ProviderError(
-                "MODEL_UNAVAILABLE",
-                f"Gemini model \"{self.model}\" not found (404): {resp.text[:300]}",
-                "gemini",
-            )
-        if resp.status_code != 200:
-            # Includes 400 (INVALID_REQUEST) - a malformed request is
-            # JARVIS's own bug, not a Gemini outage; AIProviderManager
-            # deliberately does NOT fall back on this category (see
-            # _ERROR_CATEGORIES_WORTH_FALLBACK below).
-            category = "INVALID_REQUEST" if resp.status_code == 400 else "SERVER_ERROR"
-            raise ProviderError(
-                category, f"Gemini rejected the request ({resp.status_code}): {resp.text[:300]}", "gemini"
-            )
-        return resp.json()
+            if resp.status_code in (401, 403):
+                raise ProviderError(
+                    "AUTHENTICATION_ERROR",
+                    f"Gemini authentication failed ({resp.status_code}): {resp.text[:300]}",
+                    "gemini",
+                )
+            if resp.status_code == 429:
+                raise ProviderError("RATE_LIMIT", f"Gemini rate limit hit: {resp.text[:300]}", "gemini")
+            if resp.status_code >= 500:
+                if attempt < max_attempts - 1:
+                    delay = self._RETRY_BACKOFF_SECONDS[attempt]
+                    print(
+                        f"[GeminiProvider] server error {resp.status_code} - retrying in "
+                        f"{delay}s (attempt {attempt + 2}/{max_attempts})..."
+                    )
+                    time.sleep(delay)
+                    continue
+                raise ProviderError(
+                    "SERVER_ERROR", f"Gemini server error ({resp.status_code}): {resp.text[:300]}", "gemini"
+                )
+            if resp.status_code == 404:
+                raise ProviderError(
+                    "MODEL_UNAVAILABLE",
+                    f"Gemini model \"{self.model}\" not found (404): {resp.text[:300]}",
+                    "gemini",
+                )
+            if resp.status_code != 200:
+                # Includes 400 (INVALID_REQUEST) - a malformed request is
+                # JARVIS's own bug, not a Gemini outage; AIProviderManager
+                # deliberately does NOT fall back on this category (see
+                # _ERROR_CATEGORIES_WORTH_FALLBACK below).
+                category = "INVALID_REQUEST" if resp.status_code == 400 else "SERVER_ERROR"
+                raise ProviderError(
+                    category, f"Gemini rejected the request ({resp.status_code}): {resp.text[:300]}", "gemini"
+                )
+            return resp.json()
+        # Unreachable - the loop above always either returns, continues, or
+        # raises before exhausting max_attempts.
+        raise ProviderError("SERVER_ERROR", "Gemini request failed after retries", "gemini")
 
     def generate_reply(
         self,
